@@ -71,6 +71,11 @@ class DatabaseFacade {
     return repo.getClients(organizationId, createdBy);
   }
 
+  async getClientById(id: string): Promise<Client | undefined> {
+    const repo = await getDbRepository();
+    return repo.getClientById(id);
+  }
+
   async saveClient(client: Client): Promise<Client> {
     const repo = await getDbRepository();
     return repo.saveClient(client);

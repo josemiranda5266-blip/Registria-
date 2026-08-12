@@ -69,13 +69,12 @@ export class JsonRepository implements IRepository {
     const adminEmail = process.env.ADMIN_INITIAL_EMAIL || 'admin@registria.gob.ar';
     const envAdminPassword = process.env.ADMIN_INITIAL_PASSWORD;
 
-    if (!envAdminPassword && process.env.NODE_ENV === 'production') {
-      console.error('[SECURITY FATAL] En entorno de producción, la variable ADMIN_INITIAL_PASSWORD es obligatoria.');
-      process.exit(1);
+    if (!envAdminPassword) {
+      console.error('[CONFIG ERROR] La variable de entorno ADMIN_INITIAL_PASSWORD es requerida para crear el administrador inicial.');
+      throw new Error('ADMIN_INITIAL_PASSWORD environment variable is required to create initial admin user.');
     }
 
-    const initialPassword = envAdminPassword || 'RegistriaAdmin2026!';
-    const adminPass = hashPassword(initialPassword);
+    const adminPass = hashPassword(envAdminPassword);
 
     const initialAdmin: UserRecord = {
       id: 'usr-admin-1',
@@ -88,7 +87,7 @@ export class JsonRepository implements IRepository {
       active: true,
       passwordHash: adminPass.hash,
       salt: adminPass.salt,
-      mustChangePassword: !envAdminPassword,
+      mustChangePassword: false,
     };
 
     // Hydrate default clients & cases with organizationId

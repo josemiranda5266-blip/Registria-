@@ -147,11 +147,15 @@ export class PostgresRepository implements IRepository {
       // Ensure Admin exists
       const adminUsername = process.env.ADMIN_INITIAL_USERNAME || 'admin';
       const adminEmail = process.env.ADMIN_INITIAL_EMAIL || 'admin@registria.gob.ar';
-      const initialPassword = process.env.ADMIN_INITIAL_PASSWORD || 'RegistriaAdmin2026!';
+      const envAdminPassword = process.env.ADMIN_INITIAL_PASSWORD;
 
       const checkAdmin = await client.query('SELECT id FROM users WHERE username = $1', [adminUsername]);
       if (checkAdmin.rows.length === 0) {
-        const adminPass = hashPassword(initialPassword);
+        if (!envAdminPassword) {
+          console.error('[CONFIG ERROR] La variable de entorno ADMIN_INITIAL_PASSWORD es requerida para crear el administrador inicial.');
+          throw new Error('ADMIN_INITIAL_PASSWORD environment variable is required to create initial admin user.');
+        }
+        const adminPass = hashPassword(envAdminPassword);
         await client.query(
           `INSERT INTO users (id, username, email, name, role, organization_id, password_hash, salt, must_change_password)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -164,7 +168,7 @@ export class PostgresRepository implements IRepository {
             DEFAULT_ORG_ID,
             adminPass.hash,
             adminPass.salt,
-            !process.env.ADMIN_INITIAL_PASSWORD,
+            false,
           ]
         );
       }

@@ -6,6 +6,7 @@ export const DNI_CUIT_REGEX = /^(\d{7,8}|\d{2}-\d{8}-\d)$/;
 export const PATENTE_REGEX = /^([A-Z]{3}\d{3}|[A-Z]{2}\d{3}[A-Z]{2})$/i; // Old format (AAA123) and new Mercosur format (AA123AA)
 
 export const CreateClientSchema = z.object({
+  id: z.string().optional(),
   name: z.string().min(2, 'El nombre debe tener al menos 2 caracteres').max(128),
   dniCuit: z.string().regex(DNI_CUIT_REGEX, 'DNI o CUIT inválido (ej. 20-12345678-9 o 12345678)'),
   type: z.enum(['PERSONA_HUMANA', 'PERSONA_JURIDICA']),
@@ -19,6 +20,7 @@ export const CreateClientSchema = z.object({
 export const UpdateClientSchema = CreateClientSchema.partial();
 
 export const CreateCaseSchema = z.object({
+  id: z.string().optional(),
   title: z.string().min(3, 'El título es obligatorio').max(256),
   clientId: z.string().min(1, 'Debe seleccionar un cliente'),
   clientName: z.string().min(1),

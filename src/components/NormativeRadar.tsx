@@ -36,11 +36,11 @@ export const NormativeRadar: React.FC = () => {
     },
     {
       id: 'rad-2',
-      title: 'Actualización de Tope para Formulario CETA (AFIP/ARCA)',
-      disposition: 'Resolución General Conjunta 5500/2026',
+      title: 'Derogación del Certificado CETA para Transferencias Automotor (ARCA/AFIP)',
+      disposition: 'Resolución General Conjunta 5500/2024 - ARCA',
       date: '2026-06-01',
       impact: 'MEDIO',
-      summary: 'Se eleva el monto mínimo a partir del cual es obligatorio tramitar el Certificado de Transferencia de Automotores (CETA).',
+      summary: 'Derogación del Certificado de Transferencia de Automotores (CETA). El trámite CETA no constituye un requisito obligatorio vigente.',
       affectedProcedures: ['Transferencia Ordinaria', 'Transferencia por Sucesión'],
     },
     {
@@ -60,7 +60,7 @@ export const NormativeRadar: React.FC = () => {
       const response = await fetch('/api/norm-diff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ normA, normB }),
+        body: JSON.stringify({ normAId: normA, normBId: normB }),
       });
       if (!response.ok) throw new Error('Error en comparador');
       const data = await response.json();

@@ -16,7 +16,6 @@ export const PROCEDURES_CATALOG: Procedure[] = [
       'Constancia de CUIT/CUIL',
       'Título del Automotor y Cédulas de identificación',
       'Verificación Física Policial (Formulario 12) si el vehículo tiene menos de 20 años de antigüedad',
-      'Formulario CETA de AFIP/ARCA (si el valor de tabla supera el tope fijado)',
       'Informe de Dominio (Recomendado para verificar embargos o prendas)',
       'Asentimiento conyugal si el titular es casado y el bien es ganancial',
     ],
@@ -28,7 +27,7 @@ export const PROCEDURES_CATALOG: Procedure[] = [
       'Abonar los aranceles de transferencia e impuesto al sello provincial.',
       'Retirar la nueva Cédula de Identificación a nombre del nuevo titular.',
     ],
-    formsRequired: ['08 / 08D', '12 (Verificación)', 'CETA (AFIP)', '13A / 13C (Patentes)'],
+    formsRequired: ['08 / 08D', '12 (Verificación)', '13A / 13C (Patentes)'],
     estimatedDays: '2 a 5 días hábiles',
     warnings: [
       'Si el titular registral es casado y el bien es ganancial, su cónyuge DEBE firmar el asentimiento en la Sección del 08.',

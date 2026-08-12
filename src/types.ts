@@ -218,7 +218,7 @@ export interface AIResponseStructure {
   documentation: string[];
   observations: string[];
   sources: AIResponseSource[];
-  confidence: 'ALTA' | 'MEDIA' | 'BAJA';
+  confidence: 'ALTA' | 'MEDIA' | 'BAJA' | 'SIN_EVIDENCIA';
   confidenceReason?: string;
   lastSyncDate: string;
   warnings?: string[];

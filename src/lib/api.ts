@@ -192,15 +192,15 @@ export class ApiClient {
   static async verifyDocuments(documents: AnalyzedDocument[]): Promise<DocumentVerificationResult> {
     return this.request('/api/verify-documents', {
       method: 'POST',
-      body: JSON.stringify(documents),
+      body: JSON.stringify({ documents }),
     });
   }
 
   // --- Norm Diff ---
-  static async normDiff(normA: string, normB: string): Promise<any> {
+  static async normDiff(normAId: string, normBId: string): Promise<any> {
     return this.request('/api/norm-diff', {
       method: 'POST',
-      body: JSON.stringify({ normA, normB }),
+      body: JSON.stringify({ normAId, normBId }),
     });
   }
 }
