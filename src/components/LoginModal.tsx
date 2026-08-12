@@ -43,18 +43,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
   };
 
-  const handleQuickDemoLogin = async (demoUser: string) => {
-    setLoading(true);
+  const handleSelectUsernameHelper = (selectedUser: string) => {
+    setUsername(selectedUser);
+    setPassword('');
     setErrorMsg(null);
-    try {
-      const res = await ApiClient.login(demoUser, 'Registria2026!');
-      onLoginSuccess(res.user);
-      onClose();
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error al autenticar sesión de demostración.');
-    } finally {
-      setLoading(false);
-    }
   };
 
   return (
@@ -119,7 +111,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="ej. admin, mandatario, asistente, consulta"
+                  placeholder="ej. admin, mandatario"
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -147,40 +139,26 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
             <div className="pt-3 border-t border-slate-800 space-y-2">
               <p className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
-                Acceso Rápido por Rol (Demostración):
+                Seleccionar usuario para autenticar:
               </p>
 
               <div className="grid grid-cols-2 gap-2">
                 <button
-                  onClick={() => handleQuickDemoLogin('admin')}
-                  className="p-2 bg-slate-950 border border-slate-800 hover:border-blue-500 rounded-lg text-left transition-all"
+                  type="button"
+                  onClick={() => handleSelectUsernameHelper('admin')}
+                  className="p-2 bg-slate-950 border border-slate-800 hover:border-blue-500 rounded-lg text-left transition-all cursor-pointer"
                 >
-                  <p className="font-bold text-white">ADMIN</p>
-                  <p className="text-[10px] text-slate-400">Administrador General</p>
+                  <p className="font-bold text-white">admin</p>
+                  <p className="text-[10px] text-slate-400">Administrador Principal</p>
                 </button>
 
                 <button
-                  onClick={() => handleQuickDemoLogin('mandatario')}
-                  className="p-2 bg-slate-950 border border-slate-800 hover:border-blue-500 rounded-lg text-left transition-all"
+                  type="button"
+                  onClick={() => handleSelectUsernameHelper('mandatario')}
+                  className="p-2 bg-slate-950 border border-slate-800 hover:border-blue-500 rounded-lg text-left transition-all cursor-pointer"
                 >
-                  <p className="font-bold text-white">MANDATARIO</p>
+                  <p className="font-bold text-white">mandatario</p>
                   <p className="text-[10px] text-slate-400">Gestor Matriculado</p>
-                </button>
-
-                <button
-                  onClick={() => handleQuickDemoLogin('asistente')}
-                  className="p-2 bg-slate-950 border border-slate-800 hover:border-blue-500 rounded-lg text-left transition-all"
-                >
-                  <p className="font-bold text-white">ASISTENTE</p>
-                  <p className="text-[10px] text-slate-400">Soporte Operativo</p>
-                </button>
-
-                <button
-                  onClick={() => handleQuickDemoLogin('consulta')}
-                  className="p-2 bg-slate-950 border border-slate-800 hover:border-blue-500 rounded-lg text-left transition-all"
-                >
-                  <p className="font-bold text-white">CONSULTA</p>
-                  <p className="text-[10px] text-slate-400">Modo Solo Lectura</p>
                 </button>
               </div>
             </div>

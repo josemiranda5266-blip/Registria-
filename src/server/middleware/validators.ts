@@ -13,7 +13,7 @@ export function validateBody(schema: z.ZodSchema) {
           error: {
             code: 'VALIDATION_ERROR',
             message: 'Parámetros de entrada inválidos.',
-            details: err.errors.map((e) => ({ field: e.path.join('.'), message: e.message })),
+            details: err.issues.map((e) => ({ field: e.path.join('.'), message: e.message })),
           },
         });
       }
@@ -51,7 +51,7 @@ export const VerifyDocsSchema = z.object({
   documents: z.array(z.object({
     fileName: z.string().optional(),
     documentType: z.string().optional(),
-    extractedFields: z.record(z.any()).optional(),
+    extractedFields: z.record(z.string(), z.any()).optional(),
   })).min(2, 'Se requieren al menos 2 documentos para verificación cruzada.'),
 });
 

@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
+import crypto from 'crypto';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -24,7 +25,19 @@ import { UserRole } from './src/types.js';
 const app = express();
 const PORT = 3000;
 
-// Security & Middleware Configuration
+// Security & CORS Configuration
+const isProduction = process.env.NODE_ENV === 'production';
+const corsOriginEnv = process.env.CORS_ORIGIN;
+
+if (isProduction && !corsOriginEnv) {
+  console.error('[SECURITY FATAL] En entorno de producción, la variable de entorno CORS_ORIGIN es obligatoria.');
+  process.exit(1);
+}
+
+const allowedOrigins = corsOriginEnv
+  ? corsOriginEnv.split(',').map((o) => o.trim())
+  : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
 app.use(
   helmet({
     contentSecurityPolicy: false, // Disabled for Vite hot reload & iframe dev compatibility
@@ -34,7 +47,14 @@ app.use(
 
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || true,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (!isProduction) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Bloqueado por política de seguridad CORS'));
+    },
     credentials: true,
   })
 );
@@ -42,6 +62,36 @@ app.use(
 app.use(express.json({ limit: '25mb' }));
 app.use(cookieParser());
 app.use(authMiddleware);
+
+// CSRF Protection Middleware
+function csrfProtection(req: Request, res: Response, next: NextFunction) {
+  // Safe HTTP methods do not require CSRF token
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return next();
+  }
+
+  // Login is exempt prior to session creation
+  if (req.path === '/api/auth/login') {
+    return next();
+  }
+
+  const cookieCsrf = req.cookies?.['XSRF-TOKEN'];
+  const headerCsrf = req.headers['x-csrf-token'] || req.headers['x-xsrf-token'];
+
+  if (!cookieCsrf || !headerCsrf || cookieCsrf !== headerCsrf) {
+    return res.status(403).json({
+      success: false,
+      error: {
+        code: 'CSRF_INVALID',
+        message: 'Validación Anti-CSRF fallida. Solicitud mutable denegada por seguridad.',
+      },
+    });
+  }
+
+  next();
+}
+
+app.use('/api', csrfProtection);
 
 // Rate Limiters
 const apiLimiter = rateLimit({
@@ -76,6 +126,20 @@ app.use('/api', apiLimiter);
 // 1. AUTHENTICATION & USER MANAGEMENT API
 // ==========================================
 
+app.get('/api/auth/csrf-token', (req: Request, res: Response) => {
+  let csrfToken = req.cookies?.['XSRF-TOKEN'];
+  if (!csrfToken) {
+    csrfToken = crypto.randomBytes(16).toString('hex');
+  }
+  res.cookie('XSRF-TOKEN', csrfToken, {
+    httpOnly: false, // Accessible by JS to populate Anti-CSRF request header
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+  });
+  return res.json({ success: true, csrfToken });
+});
+
 app.post('/api/auth/login', validateBody(LoginSchema), (req: Request, res: Response) => {
   const { username, password } = req.body;
   const user = db.getUserByUsername(username);
@@ -105,6 +169,16 @@ app.post('/api/auth/login', validateBody(LoginSchema), (req: Request, res: Respo
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     maxAge: 24 * 60 * 60 * 1000,
+    path: '/',
+  });
+
+  // Also issue/refresh CSRF token cookie on login
+  const csrfToken = crypto.randomBytes(16).toString('hex');
+  res.cookie('XSRF-TOKEN', csrfToken, {
+    httpOnly: false,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
   });
 
   db.addAuditLog({
@@ -118,10 +192,10 @@ app.post('/api/auth/login', validateBody(LoginSchema), (req: Request, res: Respo
   });
 
   const { passwordHash, salt, ...safeUser } = user;
+  // NEVER return raw session token in JSON response
   return res.json({
     success: true,
     user: safeUser,
-    token: session.token,
   });
 });
 
@@ -323,193 +397,221 @@ app.get('/api/audit-logs', requireAuth, requireRole(['ADMIN']), (req: Authentica
 // 5. CORE AI & RAG ENDPOINTS
 // ==========================================
 
-app.post('/api/chat', aiLimiter, validateBody(ChatQuerySchema), async (req: Request, res: Response) => {
-  const startTime = Date.now();
-  try {
-    const { query, officialOnly, mode } = req.body;
-    const allNorms = db.getNorms();
+app.post(
+  '/api/chat',
+  requireAuth,
+  requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE', 'CONSULTA']),
+  aiLimiter,
+  validateBody(ChatQuerySchema),
+  async (req: AuthenticatedRequest, res: Response) => {
+    const startTime = Date.now();
+    try {
+      const { query, officialOnly, mode } = req.body;
+      const allNorms = db.getNorms();
 
-    // RAG Pipeline
-    const { matchedChunks, matchedDocs, queryTerms } = searchNormativeContext(query, Boolean(officialOnly), allNorms);
+      // RAG Pipeline
+      const { matchedChunks, matchedDocs, queryTerms } = searchNormativeContext(query, Boolean(officialOnly), allNorms);
 
-    const responseStructure = await GeminiService.generateChatResponse({
-      query,
-      mode: mode || 'profesional',
-      officialOnly: Boolean(officialOnly),
-      matchedChunks,
-      matchedDocs,
-    });
+      const responseStructure = await GeminiService.generateChatResponse({
+        query,
+        mode: mode || 'profesional',
+        officialOnly: Boolean(officialOnly),
+        matchedChunks,
+        matchedDocs,
+      });
 
-    const executionTimeMs = Date.now() - startTime;
+      const executionTimeMs = Date.now() - startTime;
 
-    return res.json({
-      success: true,
-      responseStructure,
-      traceInfo: {
-        queryClassification: query.toLowerCase().includes('fallec') ? 'Sucesión / Fallecimiento' : 'Consulta Registral Automotor',
-        keywordsUsed: queryTerms,
-        matchedChunksCount: matchedChunks.length,
-        vigencyFilteredCount: matchedChunks.filter((c) => c.status === 'VIGENTE').length,
-        modelUsed: process.env.GEMINI_API_KEY ? 'gemini-3.6-flash' : 'deterministic-rag-engine',
-        executionTimeMs,
-      },
-    });
-  } catch (error: any) {
-    console.error('[API /api/chat Error]:', error);
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: 'CHAT_ERROR',
-        message: 'No fue posible procesar la consulta normativa en este momento.',
-      },
-    });
-  }
-});
-
-app.post('/api/analyze-document', aiLimiter, validateBody(AnalyzeDocSchema), async (req: Request, res: Response) => {
-  try {
-    const { imageBase64, documentType, fileName } = req.body;
-
-    if (!imageBase64 && !fileName) {
-      return res.status(400).json({
+      return res.json({
+        success: true,
+        responseStructure,
+        traceInfo: {
+          queryClassification: query.toLowerCase().includes('fallec') ? 'Sucesión / Fallecimiento' : 'Consulta Registral Automotor',
+          keywordsUsed: queryTerms,
+          matchedChunksCount: matchedChunks.length,
+          vigencyFilteredCount: matchedChunks.filter((c) => c.status === 'VIGENTE').length,
+          modelUsed: process.env.GEMINI_API_KEY ? 'gemini-3.6-flash' : 'deterministic-rag-engine',
+          executionTimeMs,
+        },
+      });
+    } catch (error: any) {
+      console.error('[API /api/chat Error]:', error);
+      return res.status(500).json({
         success: false,
         error: {
-          code: 'MISSING_FILE',
-          message: 'Se requiere una imagen o nombre de archivo válido.',
+          code: 'CHAT_ERROR',
+          message: 'No fue posible procesar la consulta normativa en este momento.',
         },
       });
     }
-
-    const result = await GeminiService.analyzeDocumentOCR({
-      imageBase64,
-      documentType,
-      fileName,
-    });
-
-    const docRecord = {
-      id: `doc-${Date.now()}`,
-      fileName: fileName || 'documento_analizado.jpg',
-      documentType: result.documentType || documentType || 'TITULO_AUTOMOTOR',
-      extractedFields: result.extractedFields || {},
-      rawOcrText: result.rawOcrText || '',
-      confidenceScore: typeof result.confidenceScore === 'number' ? result.confidenceScore : 0.0,
-      uploadedAt: new Date().toISOString(),
-    };
-
-    db.saveAnalyzedDoc(docRecord as any);
-
-    return res.json(docRecord);
-  } catch (error: any) {
-    console.error('[API /api/analyze-document Error]:', error);
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: 'OCR_ERROR',
-        message: 'No fue posible analizar el documento adjunto.',
-      },
-    });
   }
-});
+);
 
-app.post('/api/verify-documents', aiLimiter, validateBody(VerifyDocsSchema), async (req: Request, res: Response) => {
-  try {
-    const { documents } = req.body;
+app.post(
+  '/api/analyze-document',
+  requireAuth,
+  requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']),
+  aiLimiter,
+  validateBody(AnalyzeDocSchema),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { imageBase64, documentType, fileName } = req.body;
 
-    const inconsistencies: Array<{
-      id: string;
-      fieldLabel: string;
-      docAName: string;
-      valueA: string;
-      docBName: string;
-      valueB: string;
-      severity: 'GRAVE' | 'MODERADA' | 'LEVE';
-      recommendation: string;
-    }> = [];
+      if (!imageBase64 && !fileName) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_FILE',
+            message: 'Se requiere una imagen o nombre de archivo válido.',
+          },
+        });
+      }
 
-    let verifiedFieldsCount = 0;
+      const result = await GeminiService.analyzeDocumentOCR({
+        imageBase64,
+        documentType,
+        fileName,
+      });
 
-    // Cross-verify extracted fields
-    if (documents.length >= 2) {
-      const docA = documents[0];
-      const docB = documents[1];
-
-      const fieldsA = docA.extractedFields || {};
-      const fieldsB = docB.extractedFields || {};
-
-      const keyLabels: Record<string, string> = {
-        titular: 'Titular Registral',
-        dniCuit: 'DNI / CUIT',
-        dominio: 'Dominio (Patente)',
-        numeroChasis: 'Número de Chasis',
-        numeroMotor: 'Número de Motor',
+      const docRecord = {
+        id: `doc-${Date.now()}`,
+        fileName: fileName || 'documento_analizado.jpg',
+        documentType: result.documentType || documentType || 'TITULO_AUTOMOTOR',
+        extractedFields: result.extractedFields || {},
+        rawOcrText: result.rawOcrText || '',
+        confidenceScore: typeof result.confidenceScore === 'number' ? result.confidenceScore : 0.0,
+        uploadedAt: new Date().toISOString(),
       };
 
-      Object.keys(keyLabels).forEach((key) => {
-        const valA = fieldsA[key]?.value;
-        const valB = fieldsB[key]?.value;
+      db.saveAnalyzedDoc(docRecord as any);
 
-        if (valA && valB && valA !== 'NO LEGIBLE' && valB !== 'NO LEGIBLE') {
-          verifiedFieldsCount++;
-          const normA = valA.toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
-          const normB = valB.toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
-
-          if (normA !== normB) {
-            const isGrave = key === 'dominio' || key === 'dniCuit' || key === 'numeroChasis';
-            inconsistencies.push({
-              id: `inc-${Date.now()}-${key}`,
-              fieldLabel: keyLabels[key],
-              docAName: docA.fileName || docA.documentType || 'Documento 1',
-              valueA: valA,
-              docBName: docB.fileName || docB.documentType || 'Documento 2',
-              valueB: valB,
-              severity: isGrave ? 'GRAVE' : 'MODERADA',
-              recommendation: isGrave
-                ? 'Corregir la disparidad antes de presentar el expediente ante el Registro Seccional.'
-                : 'Verificar la constancia certificada de RENAPER o Titulo.',
-            });
-          }
-        }
+      return res.json(docRecord);
+    } catch (error: any) {
+      console.error('[API /api/analyze-document Error]:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'OCR_ERROR',
+          message: 'No fue posible analizar el documento adjunto.',
+        },
       });
     }
-
-    return res.json({
-      success: true,
-      isConsistent: inconsistencies.length === 0,
-      summary: inconsistencies.length === 0
-        ? `Se verificaron ${verifiedFieldsCount} campos clave entre los documentos y no se detectaron inconsistencias.`
-        : `Se detectaron ${inconsistencies.length} inconsistencias que requieren rectificación previo al ingreso registral.`,
-      verifiedFieldsCount,
-      inconsistencies,
-    });
-  } catch (error: any) {
-    console.error('[API /api/verify-documents Error]:', error);
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: 'VERIFICATION_ERROR',
-        message: 'Error en el análisis de verificación documental.',
-      },
-    });
   }
-});
+);
 
-app.post('/api/norm-diff', aiLimiter, validateBody(NormDiffSchema), async (req: Request, res: Response) => {
-  try {
-    const { normA, normB } = req.body;
-    return res.json({
-      success: true,
-      added: ['Límites de vigencia actualizados para Cédula Verde.'],
-      modified: ['Uso digital de Cédula mediante aplicación Mi Argentina.'],
-      repealed: ['Derogación de la obligación de portar Cédula Azul física para autorizados.'],
-      practicalImpact: 'El titular registral puede autorizar la conducción directamente desde la plataforma digital oficial sin requerir expedición de cédula azul en papel.',
-    });
-  } catch (error: any) {
-    return res.status(500).json({
-      success: false,
-      error: { code: 'DIFF_ERROR', message: 'Error al comparar textos normativos.' },
-    });
+app.post(
+  '/api/verify-documents',
+  requireAuth,
+  requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']),
+  aiLimiter,
+  validateBody(VerifyDocsSchema),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { documents } = req.body;
+
+      const inconsistencies: Array<{
+        id: string;
+        fieldLabel: string;
+        docAName: string;
+        valueA: string;
+        docBName: string;
+        valueB: string;
+        severity: 'GRAVE' | 'MODERADA' | 'LEVE';
+        recommendation: string;
+      }> = [];
+
+      let verifiedFieldsCount = 0;
+
+      // Cross-verify extracted fields
+      if (documents.length >= 2) {
+        const docA = documents[0];
+        const docB = documents[1];
+
+        const fieldsA = docA.extractedFields || {};
+        const fieldsB = docB.extractedFields || {};
+
+        const keyLabels: Record<string, string> = {
+          titular: 'Titular Registral',
+          dniCuit: 'DNI / CUIT',
+          dominio: 'Dominio (Patente)',
+          numeroChasis: 'Número de Chasis',
+          numeroMotor: 'Número de Motor',
+        };
+
+        Object.keys(keyLabels).forEach((key) => {
+          const valA = fieldsA[key]?.value;
+          const valB = fieldsB[key]?.value;
+
+          if (valA && valB && valA !== 'NO LEGIBLE' && valB !== 'NO LEGIBLE') {
+            verifiedFieldsCount++;
+            const normA = valA.toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+            const normB = valB.toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+            if (normA !== normB) {
+              const isGrave = key === 'dominio' || key === 'dniCuit' || key === 'numeroChasis';
+              inconsistencies.push({
+                id: `inc-${Date.now()}-${key}`,
+                fieldLabel: keyLabels[key],
+                docAName: docA.fileName || docA.documentType || 'Documento 1',
+                valueA: valA,
+                docBName: docB.fileName || docB.documentType || 'Documento 2',
+                valueB: valB,
+                severity: isGrave ? 'GRAVE' : 'MODERADA',
+                recommendation: isGrave
+                  ? 'Corregir la disparidad antes de presentar el expediente ante el Registro Seccional.'
+                  : 'Verificar la constancia certificada de RENAPER o Titulo.',
+              });
+            }
+          }
+        });
+      }
+
+      return res.json({
+        success: true,
+        isConsistent: inconsistencies.length === 0,
+        summary: inconsistencies.length === 0
+          ? `Se verificaron ${verifiedFieldsCount} campos clave entre los documentos y no se detectaron inconsistencias.`
+          : `Se detectaron ${inconsistencies.length} inconsistencias que requieren rectificación previo al ingreso registral.`,
+        verifiedFieldsCount,
+        inconsistencies,
+      });
+    } catch (error: any) {
+      console.error('[API /api/verify-documents Error]:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'VERIFICATION_ERROR',
+          message: 'Error en el análisis de verificación documental.',
+        },
+      });
+    }
   }
-});
+);
+
+app.post(
+  '/api/norm-diff',
+  requireAuth,
+  requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE', 'CONSULTA']),
+  aiLimiter,
+  validateBody(NormDiffSchema),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { normA, normB } = req.body;
+      return res.json({
+        success: true,
+        added: ['Límites de vigencia actualizados para Cédula Verde.'],
+        modified: ['Uso digital de Cédula mediante aplicación Mi Argentina.'],
+        repealed: ['Derogación de la obligación de portar Cédula Azul física para autorizados.'],
+        practicalImpact: 'El titular registral puede autorizar la conducción directamente desde la plataforma digital oficial sin requerir expedición de cédula azul en papel.',
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'DIFF_ERROR', message: 'Error al comparar textos normativos.' },
+      });
+    }
+  }
+);
 
 // Global Error Handler Middleware
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {

@@ -7,10 +7,35 @@ export interface ApiError {
 }
 
 export class ApiClient {
+  private static csrfToken: string | null = null;
+
+  static async getCsrfToken(): Promise<string> {
+    if (this.csrfToken) return this.csrfToken;
+    try {
+      const res = await fetch('/api/auth/csrf-token', { credentials: 'same-origin' });
+      const data = await res.json();
+      if (data.csrfToken) {
+        this.csrfToken = data.csrfToken;
+        return data.csrfToken;
+      }
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
   private static async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const method = (options.method || 'GET').toUpperCase();
     const defaultHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
     };
+
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      const token = await this.getCsrfToken();
+      if (token) {
+        defaultHeaders['X-CSRF-Token'] = token;
+      }
+    }
 
     const config: RequestInit = {
       ...options,
@@ -36,16 +61,19 @@ export class ApiClient {
   }
 
   // --- Auth ---
-  static async login(username: string, password: string): Promise<{ user: User; token: string }> {
-    const res = await this.request<{ success: boolean; user: User; token: string }>('/api/auth/login', {
+  static async login(username: string, password: string): Promise<{ user: User }> {
+    const res = await this.request<{ success: boolean; user: User }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     });
-    return { user: res.user, token: res.token };
+    // Invalidate cached CSRF token so next request fetches refreshed token
+    this.csrfToken = null;
+    return { user: res.user };
   }
 
   static async logout(): Promise<void> {
     await this.request('/api/auth/logout', { method: 'POST' });
+    this.csrfToken = null;
   }
 
   static async getMe(): Promise<User | null> {

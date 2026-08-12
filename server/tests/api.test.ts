@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { hashPassword, verifyPassword, db } from '../db/database.js';
-import { searchNormativeContext } from '../services/ragService.js';
+import { hashPassword, verifyPassword, db } from '../../src/server/db/database.js';
+import { searchNormativeContext } from '../../src/server/services/ragService.js';
 
 describe('REGISTRIA Production API & Database Tests', () => {
   it('Password hashing & verification works correctly', () => {
-    const rawPass = 'Registria2026!';
+    const rawPass = 'SecureDynamicPass_987123!';
     const { hash, salt } = hashPassword(rawPass);
     expect(hash).toBeDefined();
     expect(salt).toBeDefined();
@@ -16,14 +16,28 @@ describe('REGISTRIA Production API & Database Tests', () => {
     expect(isInvalid).toBe(false);
   });
 
-  it('Default seed users exist in database', () => {
+  it('Default admin user is bootstrapped in database', () => {
     const adminUser = db.getUserByUsername('admin');
     expect(adminUser).toBeDefined();
     expect(adminUser?.role).toBe('ADMIN');
+  });
 
-    const mandatario = db.getUserByUsername('mandatario');
-    expect(mandatario).toBeDefined();
-    expect(mandatario?.role).toBe('MANDATARIO');
+  it('New users can be created dynamically with role permissions', () => {
+    const created = db.createUser({
+      username: 'test_mandatario',
+      email: 'mandatario@test.gob.ar',
+      name: 'Mandatario Test',
+      role: 'MANDATARIO',
+      password: 'DynamicPassword2026!',
+    });
+
+    expect(created.id).toBeDefined();
+    expect(created.username).toBe('test_mandatario');
+    expect(created.role).toBe('MANDATARIO');
+
+    const fetched = db.getUserByUsername('test_mandatario');
+    expect(fetched).toBeDefined();
+    expect(verifyPassword('DynamicPassword2026!', fetched!.passwordHash, fetched!.salt)).toBe(true);
   });
 
   it('Session management generates valid tokens', () => {

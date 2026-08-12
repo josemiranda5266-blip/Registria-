@@ -11,6 +11,7 @@ const CASES_KEY = 'registria_cases_v2';
 const CLIENTS_KEY = 'registria_clients_v2';
 const NORMS_KEY = 'registria_norms_v2';
 const ROLE_KEY = 'registria_user_role_v2';
+const DOCS_KEY = 'registria_docs_v2';
 
 export const INITIAL_CLIENTS: Client[] = [
   {
@@ -190,5 +191,27 @@ export const StorageEngine = {
     localStorage.setItem(NORMS_KEY, JSON.stringify(norms));
     ApiClient.saveNorm(norm).catch(() => {});
     return norms;
+  },
+
+  getAnalyzedDocs(): AnalyzedDocument[] {
+    const data = localStorage.getItem(DOCS_KEY);
+    if (!data) return [];
+    try {
+      return JSON.parse(data);
+    } catch {
+      return [];
+    }
+  },
+
+  saveAnalyzedDoc(doc: AnalyzedDocument): AnalyzedDocument[] {
+    const docs = this.getAnalyzedDocs();
+    const idx = docs.findIndex((d) => d.id === doc.id);
+    if (idx >= 0) {
+      docs[idx] = doc;
+    } else {
+      docs.unshift(doc);
+    }
+    localStorage.setItem(DOCS_KEY, JSON.stringify(docs));
+    return docs;
   },
 };
