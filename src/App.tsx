@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, UserRole } from './types';
-import { StorageEngine } from './lib/storage';
+import { VisualPreferences } from './lib/storage';
 import { ApiClient } from './lib/api';
 import { Header } from './components/Header';
 import { ChatRAG } from './components/ChatRAG';
@@ -16,31 +16,40 @@ import { AdminPanel } from './components/AdminPanel';
 export function App() {
   const [activeTab, setActiveTab] = useState<string>('chat');
   const [officialOnly, setOfficialOnly] = useState<boolean>(true);
-  const [mode, setMode] = useState<'profesional' | 'simple'>('profesional');
+  const [mode, setMode] = useState<'profesional' | 'simple'>(() => VisualPreferences.getViewMode());
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [userRole, setUserRole] = useState<UserRole>(() => StorageEngine.getRole());
+  const [userRole, setUserRole] = useState<UserRole>('MANDATARIO');
 
-  const casesCount = StorageEngine.getCases().length;
-  const normsCount = StorageEngine.getNorms().length;
+  const [casesCount, setCasesCount] = useState<number>(0);
+  const [normsCount, setNormsCount] = useState<number>(0);
 
   useEffect(() => {
-    // Check existing server session on boot
+    // Check existing server session on boot (Single Source of Truth)
     ApiClient.getMe().then((user) => {
       if (user) {
         setCurrentUser(user);
         setUserRole(user.role);
       }
     });
+
+    // Fetch initial counts from DB
+    ApiClient.getCases().then((list) => setCasesCount(list.length)).catch(() => {});
+    ApiClient.getNorms().then((list) => setNormsCount(list.length)).catch(() => {});
   }, []);
 
   const handleRoleChange = (role: UserRole) => {
     setUserRole(role);
-    StorageEngine.setRole(role);
+  };
+
+  const handleModeChange = (newMode: 'profesional' | 'simple') => {
+    setMode(newMode);
+    VisualPreferences.setViewMode(newMode);
   };
 
   const handleLogout = () => {
     ApiClient.logout().catch(() => {});
     setCurrentUser(null);
+    setUserRole('CONSULTA');
   };
 
   return (
@@ -52,7 +61,7 @@ export function App() {
         officialOnly={officialOnly}
         setOfficialOnly={setOfficialOnly}
         mode={mode}
-        setMode={setMode}
+        setMode={handleModeChange}
         currentUser={currentUser}
         setCurrentUser={setCurrentUser}
         userRole={userRole}

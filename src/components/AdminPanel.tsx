@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Settings, ShieldCheck, CheckCircle2, AlertTriangle, Play, RefreshCw, Users, Database, FileText, UserPlus, Shield, Lock } from 'lucide-react';
 import { User, UserRole, AuditLogEntry } from '../types';
-import { StorageEngine } from '../lib/storage';
 import { ApiClient } from '../lib/api';
 
 interface AdminPanelProps {
@@ -14,6 +13,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
   const [activeSubTab, setActiveSubTab] = useState<'audit' | 'users' | 'logs'>('audit');
   const [isAuditing, setIsAuditing] = useState(false);
   const [auditResult, setAuditResult] = useState<any>(null);
+
+  // System Counts State
+  const [normsCount, setNormsCount] = useState<number>(0);
+  const [casesCount, setCasesCount] = useState<number>(0);
+  const [clientsCount, setClientsCount] = useState<number>(0);
 
   // Users Management State
   const [usersList, setUsersList] = useState<User[]>([]);
@@ -31,14 +35,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
 
-  const norms = StorageEngine.getNorms();
-  const cases = StorageEngine.getCases();
-  const clients = StorageEngine.getClients();
-
   useEffect(() => {
     fetchUsers();
     fetchLogs();
+    fetchCounts();
   }, []);
+
+  const fetchCounts = async () => {
+    try {
+      const [n, c, cl] = await Promise.all([
+        ApiClient.getNorms().catch(() => []),
+        ApiClient.getCases().catch(() => []),
+        ApiClient.getClients().catch(() => []),
+      ]);
+      setNormsCount(n.length);
+      setCasesCount(c.length);
+      setClientsCount(cl.length);
+    } catch {
+      // ignore
+    }
+  };
 
   const fetchUsers = async () => {
     setLoadingUsers(true);
@@ -101,23 +117,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
     }
   };
 
-  const handleRunAudit = () => {
+  const handleRunAudit = async () => {
     setIsAuditing(true);
-    setTimeout(() => {
+    try {
+      const res: any = await (ApiClient as any).request('/api/admin/system-audit');
       setAuditResult({
         timestamp: new Date().toLocaleString('es-AR'),
         status: 'PASA_CONTROLES',
+        checks: res.auditResults.map((r: any) => ({
+          name: `${r.category}: ${r.title}`,
+          result: r.detail,
+          status: r.status,
+        })),
+      });
+    } catch (err: any) {
+      setAuditResult({
+        timestamp: new Date().toLocaleString('es-AR'),
+        status: 'ERROR',
         checks: [
-          { name: 'Integridad de la Biblioteca Normativa (DNTR & Ley 6582)', result: 'OK (Compendio actualizado y chunks RAG activos)', status: 'PASS' },
-          { name: 'Control de Anti-Alucinación y Grounding (Modo No Inventar)', result: 'ACTIVO (Confianza clasificada en cada respuesta)', status: 'PASS' },
-          { name: 'Autenticación en Servidor & Sesiones HTTP-Only', result: 'ACTIVO (Verificación server-side sin dependencia de localStorage)', status: 'PASS' },
-          { name: 'Protección de Privacidad de Clientes (Ley 25.326)', result: 'OK (Datos sensibles y DNI/CUIT enmascarados en logs)', status: 'PASS' },
-          { name: 'Límite de Tasa de Solicitudes (Rate Limiting)', result: 'ACTIVO (Protección ante saturación en API y Gemini)', status: 'PASS' },
-          { name: 'Persistencia de Expedientes y Clientes', result: `OK (${cases.length} expedientes y ${clients.length} clientes)`, status: 'PASS' },
+          { name: 'Diagnóstico Server-Side', result: err.message || 'Error en auditoría', status: 'FAIL' },
         ],
       });
+    } finally {
       setIsAuditing(false);
-    }, 1000);
+    }
   };
 
   return (
@@ -171,7 +194,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-semibold text-xs rounded-lg flex items-center gap-2 transition-all cursor-pointer shadow-md"
             >
               {isAuditing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-              <span>Ejecutar Auditoría Diagnóstica</span>
+              <span>Ejecutar Auditoría Diagnóstica Real</span>
             </button>
           </div>
 
@@ -185,24 +208,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
               <div className="space-y-2">
                 <div className="flex justify-between items-center bg-slate-950 p-2.5 rounded border border-slate-800">
                   <span className="text-slate-400">Normas Indexadas:</span>
-                  <span className="font-mono font-bold text-white">{norms.length}</span>
-                </div>
-
-                <div className="flex justify-between items-center bg-slate-950 p-2.5 rounded border border-slate-800">
-                  <span className="text-slate-400">Normas Vigentes:</span>
-                  <span className="font-mono font-bold text-emerald-400">
-                    {norms.filter((n) => n.status === 'VIGENTE').length}
-                  </span>
+                  <span className="font-mono font-bold text-white">{normsCount}</span>
                 </div>
 
                 <div className="flex justify-between items-center bg-slate-950 p-2.5 rounded border border-slate-800">
                   <span className="text-slate-400">Expedientes en Gestión:</span>
-                  <span className="font-mono font-bold text-blue-400">{cases.length}</span>
+                  <span className="font-mono font-bold text-blue-400">{casesCount}</span>
                 </div>
 
                 <div className="flex justify-between items-center bg-slate-950 p-2.5 rounded border border-slate-800">
                   <span className="text-slate-400">Clientes Registrados:</span>
-                  <span className="font-mono font-bold text-purple-400">{clients.length}</span>
+                  <span className="font-mono font-bold text-purple-400">{clientsCount}</span>
                 </div>
               </div>
             </div>
@@ -210,7 +226,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
             {/* Audit Results Panel */}
             <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4 shadow-md text-xs">
               <h3 className="font-bold text-white text-sm border-b border-slate-800 pb-2 flex items-center justify-between">
-                <span>Diagnóstico de Auditoría Automática</span>
+                <span>Diagnóstico de Auditoría Automática en Servidor</span>
                 {auditResult && (
                   <span className="text-[10px] text-emerald-400 font-bold px-2 py-0.5 bg-emerald-950 border border-emerald-800 rounded">
                     ✓ {auditResult.status}
@@ -220,7 +236,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
 
               {!auditResult ? (
                 <p className="text-slate-500 py-8 text-center italic">
-                  Hacé clic en "Ejecutar Auditoría Diagnóstica" para evaluar la integridad del RAG, reglas de seguridad y persistencia server-side.
+                  Hacé clic en "Ejecutar Auditoría Diagnóstica Real" para evaluar la integridad del RAG, reglas de seguridad y persistencia server-side.
                 </p>
               ) : (
                 <div className="space-y-2">
@@ -230,8 +246,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
                         <p className="font-semibold text-slate-200">{chk.name}</p>
                         <p className="text-[11px] text-slate-400">{chk.result}</p>
                       </div>
-                      <span className="text-emerald-400 font-bold flex items-center gap-1 text-[11px]">
-                        <CheckCircle2 className="w-4 h-4" /> PASS
+                      <span className={`font-bold flex items-center gap-1 text-[11px] ${chk.status === 'PASS' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {chk.status === 'PASS' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />} {chk.status}
                       </span>
                     </div>
                   ))}
@@ -307,7 +323,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ userRole, setUserRole, c
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Mínimo 6 caracteres"
+                  placeholder="Mínimo 8 caracteres"
                   className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-white"
                   required
                 />

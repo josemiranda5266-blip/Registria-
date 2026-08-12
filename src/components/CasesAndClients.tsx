@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Briefcase, 
   Users, 
@@ -17,13 +17,14 @@ import {
   AlertCircle 
 } from 'lucide-react';
 import { ProcedureCase, Client, CaseStatus } from '../types';
-import { StorageEngine } from '../lib/storage';
+import { ApiClient } from '../lib/api';
 import { PROCEDURES_CATALOG } from '../data/proceduresCatalog';
 
 export const CasesAndClients: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'cases' | 'clients'>('cases');
-  const [cases, setCases] = useState<ProcedureCase[]>(() => StorageEngine.getCases());
-  const [clients, setClients] = useState<Client[]>(() => StorageEngine.getClients());
+  const [cases, setCases] = useState<ProcedureCase[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -48,6 +49,26 @@ export const CasesAndClients: React.FC = () => {
   // New Note
   const [newNoteText, setNewNoteText] = useState('');
 
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const [cList, clList] = await Promise.all([
+        ApiClient.getCases().catch(() => []),
+        ApiClient.getClients().catch(() => []),
+      ]);
+      setCases(cList);
+      setClients(clList);
+    } catch {
+      // Handled
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
   const filteredCases = cases.filter((c) => {
     const matchesSearch =
       c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -59,9 +80,9 @@ export const CasesAndClients: React.FC = () => {
     return matchesSearch && matchesStatus;
   });
 
-  const handleCreateCase = (e: React.FormEvent) => {
+  const handleCreateCase = async (e: React.FormEvent) => {
     e.preventDefault();
-    const client = clients.find((cl) => cl.id === newCaseClientId) || clients[0];
+    const client = clients.find((cl) => cl.id === newCaseClientId) || clients[0] || { id: 'cli-default', name: 'Cliente General', dniCuit: '20-00000000-0' };
     const proc = PROCEDURES_CATALOG.find((p) => p.id === newCaseProcedureId) || PROCEDURES_CATALOG[0];
 
     const newCase: ProcedureCase = {
@@ -97,16 +118,19 @@ export const CasesAndClients: React.FC = () => {
       updatedAt: new Date().toISOString().split('T')[0],
     };
 
-    const updated = StorageEngine.saveCase(newCase);
-    setCases(updated);
-    setIsNewCaseModalOpen(false);
-    // Reset
-    setNewCaseTitle('');
-    setNewCaseDomain('');
-    setNewCaseVehicle('');
+    try {
+      const saved = await ApiClient.saveCase(newCase);
+      setCases((prev) => [saved, ...prev.filter((c) => c.id !== saved.id)]);
+      setIsNewCaseModalOpen(false);
+      setNewCaseTitle('');
+      setNewCaseDomain('');
+      setNewCaseVehicle('');
+    } catch (err: any) {
+      alert(err.message || 'Error guardando expediente.');
+    }
   };
 
-  const handleCreateClient = (e: React.FormEvent) => {
+  const handleCreateClient = async (e: React.FormEvent) => {
     e.preventDefault();
     const newCli: Client = {
       id: 'cli-' + Date.now(),
@@ -119,37 +143,49 @@ export const CasesAndClients: React.FC = () => {
       createdAt: new Date().toISOString().split('T')[0],
     };
 
-    const updated = StorageEngine.saveClient(newCli);
-    setClients(updated);
-    setIsNewClientModalOpen(false);
-    setNewClientName('');
-    setNewClientDniCuit('');
+    try {
+      const saved = await ApiClient.saveClient(newCli);
+      setClients((prev) => [saved, ...prev.filter((c) => c.id !== saved.id)]);
+      setIsNewClientModalOpen(false);
+      setNewClientName('');
+      setNewClientDniCuit('');
+    } catch (err: any) {
+      alert(err.message || 'Error guardando cliente.');
+    }
   };
 
-  const toggleChecklistItem = (caseId: string, chkId: string) => {
+  const toggleChecklistItem = async (caseId: string, chkId: string) => {
     if (!selectedCase) return;
     const updatedChecklist = selectedCase.checklist.map((item) =>
       item.id === chkId ? { ...item, isCompleted: !item.isCompleted } : item
     );
     const updatedCase = { ...selectedCase, checklist: updatedChecklist };
     setSelectedCase(updatedCase);
-    const updatedCases = StorageEngine.saveCase(updatedCase);
-    setCases(updatedCases);
+    try {
+      const saved = await ApiClient.saveCase(updatedCase);
+      setCases((prev) => prev.map((c) => (c.id === saved.id ? saved : c)));
+    } catch {
+      // revert
+    }
   };
 
-  const handleAddNote = () => {
+  const handleAddNote = async () => {
     if (!selectedCase || !newNoteText.trim()) return;
     const newNote = {
       id: 'n-' + Date.now(),
-      author: 'Mandatario Varela',
+      author: 'Mandatario Registral',
       text: newNoteText,
       date: new Date().toISOString().split('T')[0],
     };
     const updatedCase = { ...selectedCase, notes: [newNote, ...selectedCase.notes] };
     setSelectedCase(updatedCase);
-    const updatedCases = StorageEngine.saveCase(updatedCase);
-    setCases(updatedCases);
     setNewNoteText('');
+    try {
+      const saved = await ApiClient.saveCase(updatedCase);
+      setCases((prev) => prev.map((c) => (c.id === saved.id ? saved : c)));
+    } catch {
+      // revert
+    }
   };
 
   const getStatusBadge = (status: CaseStatus) => {

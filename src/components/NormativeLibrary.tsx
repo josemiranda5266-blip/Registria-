@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   FileText, 
   Search, 
@@ -17,10 +17,11 @@ import {
   Hash
 } from 'lucide-react';
 import { NormDocument, NormativeStatus, DocumentType, VehicleType } from '../types';
-import { StorageEngine } from '../lib/storage';
+import { ApiClient } from '../lib/api';
 
 export const NormativeLibrary: React.FC = () => {
-  const [norms, setNorms] = useState<NormDocument[]>(() => StorageEngine.getNorms());
+  const [norms, setNorms] = useState<NormDocument[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
@@ -36,6 +37,22 @@ export const NormativeLibrary: React.FC = () => {
   const [ingestUrl, setIngestUrl] = useState('');
   const [ingestTopics, setIngestTopics] = useState('Transferencia, Requisitos');
 
+  const loadNorms = async () => {
+    setLoading(true);
+    try {
+      const list = await ApiClient.getNorms();
+      setNorms(list);
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadNorms();
+  }, []);
+
   const filteredNorms = norms.filter((norm) => {
     const matchesSearch =
       norm.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -48,7 +65,7 @@ export const NormativeLibrary: React.FC = () => {
     return matchesSearch && matchesType && matchesStatus;
   });
 
-  const handleIngest = (e: React.FormEvent) => {
+  const handleIngest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ingestTitle || !ingestContent) return;
 
@@ -74,13 +91,16 @@ export const NormativeLibrary: React.FC = () => {
       summary: ingestContent.slice(0, 150) + '...',
     };
 
-    const updated = StorageEngine.saveNorm(newNorm);
-    setNorms(updated);
-    setIsIngestModalOpen(false);
-    // Reset
-    setIngestTitle('');
-    setIngestContent('');
-    setIngestNumber('');
+    try {
+      const saved = await ApiClient.saveNorm(newNorm);
+      setNorms((prev) => [saved, ...prev.filter((n) => n.documentId !== saved.documentId)]);
+      setIsIngestModalOpen(false);
+      setIngestTitle('');
+      setIngestContent('');
+      setIngestNumber('');
+    } catch (err: any) {
+      alert(err.message || 'Error guardando norma.');
+    }
   };
 
   const getStatusBadge = (status: NormativeStatus) => {

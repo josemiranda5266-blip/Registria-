@@ -1,5 +1,6 @@
-import { INITIAL_NORMATIVE_LIBRARY, NORMATIVE_CHUNKS } from '../../data/normativeDatabase.js';
+import { INITIAL_NORMATIVE_LIBRARY } from '../../data/normativeDatabase.js';
 import { NormChunk, NormDocument } from '../../types.js';
+import { RagChunkerService } from './ragChunker.js';
 
 const STOP_WORDS = new Set([
   'de', 'la', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no',
@@ -32,8 +33,13 @@ export function searchNormativeContext(
 
   const docsToSearch = allNormsFromDb && allNormsFromDb.length > 0 ? allNormsFromDb : INITIAL_NORMATIVE_LIBRARY;
 
+  // Dynamically generate chunks from the active DB documents (Single Source of Truth)
+  const chunksToSearch: NormChunk[] = docsToSearch.flatMap((doc) =>
+    RagChunkerService.generateChunksFromDocument(doc)
+  );
+
   // Score Chunks
-  const scoredChunks = NORMATIVE_CHUNKS.map((chunk) => {
+  const scoredChunks = chunksToSearch.map((chunk) => {
     if (officialOnly && !chunk.officialSource) {
       return { chunk, score: 0 };
     }
@@ -54,7 +60,7 @@ export function searchNormativeContext(
       score += 15;
     }
 
-    // Specific automotive domain domain boosts
+    // Specific automotive domain boosts
     if (normalizedQuery.includes('fallec') || normalizedQuery.includes('sucesion')) {
       if (chunkTextNorm.includes('sucesion') || chunkTextNorm.includes('fallecimiento') || chunkTextNorm.includes('heredero')) score += 8;
     }
@@ -112,3 +118,4 @@ export function searchNormativeContext(
     queryTerms,
   };
 }
+

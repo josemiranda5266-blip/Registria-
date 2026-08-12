@@ -13,11 +13,10 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { AnalyzedDocument, DocumentVerificationResult } from '../types';
-import { StorageEngine } from '../lib/storage';
 
 export const DocumentAnalyzer: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'single' | 'verify'>('single');
-  const [analyzedDocs, setAnalyzedDocs] = useState<AnalyzedDocument[]>(() => StorageEngine.getAnalyzedDocs());
+  const [analyzedDocs, setAnalyzedDocs] = useState<AnalyzedDocument[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [docType, setDocType] = useState<AnalyzedDocument['documentType']>('TITULO_AUTOMOTOR');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -56,8 +55,7 @@ export const DocumentAnalyzer: React.FC = () => {
         result.previewUrl = base64;
 
         setCurrentDoc(result);
-        const updated = StorageEngine.saveAnalyzedDoc(result);
-        setAnalyzedDocs(updated);
+        setAnalyzedDocs((prev) => [result, ...prev]);
       } catch (err) {
         console.error('Error analizando documento:', err);
       } finally {

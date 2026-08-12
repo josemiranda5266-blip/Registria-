@@ -126,6 +126,9 @@ export type CaseStatus =
 
 export interface ProcedureCase {
   id: string;
+  organizationId?: string;
+  createdBy?: string;
+  assignedTo?: string;
   caseNumber: string;
   title: string;
   clientId: string;
@@ -148,6 +151,8 @@ export interface ProcedureCase {
 
 export interface Client {
   id: string;
+  organizationId?: string;
+  createdBy?: string;
   name: string;
   dniCuit: string;
   type: 'PERSONA_HUMANA' | 'PERSONA_JURIDICA';
@@ -168,6 +173,8 @@ export interface ExtractedField {
 
 export interface AnalyzedDocument {
   id: string;
+  organizationId?: string;
+  uploadedBy?: string;
   fileName: string;
   documentType: 'TITULO_AUTOMOTOR' | 'CEDULA_VERDE' | 'CEDULA_AZUL' | 'DNI' | 'FORMULARIO_08' | 'FORMULARIO_02' | 'FORMULARIO_12' | 'PODER' | 'ESTATUTO_SOCIETARIO' | 'OTRO';
   extractedFields: Record<string, ExtractedField>;
@@ -244,6 +251,7 @@ export interface User {
   email: string;
   name: string;
   role: UserRole;
+  organizationId?: string;
   createdAt: string;
   lastLogin?: string;
   active: boolean;

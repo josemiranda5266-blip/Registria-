@@ -8,7 +8,7 @@ export interface AuthenticatedRequest extends Request {
   token?: string;
 }
 
-export function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   let token = req.cookies?.registria_session;
 
   if (!token && req.headers.authorization) {
@@ -19,11 +19,15 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
   }
 
   if (token) {
-    const sessionData = db.getSessionByToken(token);
-    if (sessionData) {
-      req.user = sessionData.user;
-      req.userRole = sessionData.user.role;
-      req.token = token;
+    try {
+      const sessionData = await db.getSessionByToken(token);
+      if (sessionData) {
+        req.user = sessionData.user;
+        req.userRole = sessionData.user.role;
+        req.token = token;
+      }
+    } catch {
+      // ignore invalid token errors
     }
   }
 
