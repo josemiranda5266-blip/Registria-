@@ -1,0 +1,6 @@
+{
+  "name": "REGISTRIA",
+  "description": "Inteligencia registral para el automotor argentino: RAG de normativa DNRPA, asistente de trámites, verificador documental y gestión de expedientes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
