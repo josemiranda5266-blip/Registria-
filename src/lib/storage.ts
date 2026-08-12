@@ -1,16 +1,16 @@
 /**
- * REGISTRIA - Local State Engine & Storage Manager
- * Maneja persistencia de Expedientes, Clientes, Documentos Analizados, Biblioteca Normativa y Configuración.
+ * REGISTRIA - Local Adapter & State Cache
+ * Proporciona métodos sincrónicos de caché con sincronización backend mediante ApiClient.
  */
 
 import { ProcedureCase, Client, AnalyzedDocument, NormDocument, UserRole } from '../types';
 import { INITIAL_NORMATIVE_LIBRARY } from '../data/normativeDatabase';
+import { ApiClient } from './api';
 
-const CASES_KEY = 'registria_cases_v1';
-const CLIENTS_KEY = 'registria_clients_v1';
-const DOCS_KEY = 'registria_docs_v1';
-const NORMS_KEY = 'registria_norms_v1';
-const ROLE_KEY = 'registria_user_role_v1';
+const CASES_KEY = 'registria_cases_v2';
+const CLIENTS_KEY = 'registria_clients_v2';
+const NORMS_KEY = 'registria_norms_v2';
+const ROLE_KEY = 'registria_user_role_v2';
 
 export const INITIAL_CLIENTS: Client[] = [
   {
@@ -111,7 +111,6 @@ export const StorageEngine = {
   getCases(): ProcedureCase[] {
     const data = localStorage.getItem(CASES_KEY);
     if (!data) {
-      localStorage.setItem(CASES_KEY, JSON.stringify(INITIAL_CASES));
       return INITIAL_CASES;
     }
     try {
@@ -130,19 +129,22 @@ export const StorageEngine = {
       cases.unshift(newCase);
     }
     localStorage.setItem(CASES_KEY, JSON.stringify(cases));
+
+    // Async sync with API
+    ApiClient.saveCase(newCase).catch(() => {});
     return cases;
   },
 
   deleteCase(id: string): ProcedureCase[] {
     const cases = this.getCases().filter((c) => c.id !== id);
     localStorage.setItem(CASES_KEY, JSON.stringify(cases));
+    ApiClient.deleteCase(id).catch(() => {});
     return cases;
   },
 
   getClients(): Client[] {
     const data = localStorage.getItem(CLIENTS_KEY);
     if (!data) {
-      localStorage.setItem(CLIENTS_KEY, JSON.stringify(INITIAL_CLIENTS));
       return INITIAL_CLIENTS;
     }
     try {
@@ -161,13 +163,13 @@ export const StorageEngine = {
       clients.unshift(newClient);
     }
     localStorage.setItem(CLIENTS_KEY, JSON.stringify(clients));
+    ApiClient.saveClient(newClient).catch(() => {});
     return clients;
   },
 
   getNorms(): NormDocument[] {
     const data = localStorage.getItem(NORMS_KEY);
     if (!data) {
-      localStorage.setItem(NORMS_KEY, JSON.stringify(INITIAL_NORMATIVE_LIBRARY));
       return INITIAL_NORMATIVE_LIBRARY;
     }
     try {
@@ -186,23 +188,7 @@ export const StorageEngine = {
       norms.unshift(norm);
     }
     localStorage.setItem(NORMS_KEY, JSON.stringify(norms));
+    ApiClient.saveNorm(norm).catch(() => {});
     return norms;
-  },
-
-  getAnalyzedDocs(): AnalyzedDocument[] {
-    const data = localStorage.getItem(DOCS_KEY);
-    if (!data) return [];
-    try {
-      return JSON.parse(data);
-    } catch {
-      return [];
-    }
-  },
-
-  saveAnalyzedDoc(doc: AnalyzedDocument): AnalyzedDocument[] {
-    const docs = this.getAnalyzedDocs();
-    docs.unshift(doc);
-    localStorage.setItem(DOCS_KEY, JSON.stringify(docs));
-    return docs;
   },
 };

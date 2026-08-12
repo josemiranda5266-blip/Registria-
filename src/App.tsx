@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { UserRole } from './types';
+import React, { useState, useEffect } from 'react';
+import { User, UserRole } from './types';
 import { StorageEngine } from './lib/storage';
+import { ApiClient } from './lib/api';
 import { Header } from './components/Header';
 import { ChatRAG } from './components/ChatRAG';
 import { NormativeLibrary } from './components/NormativeLibrary';
@@ -16,14 +17,30 @@ export function App() {
   const [activeTab, setActiveTab] = useState<string>('chat');
   const [officialOnly, setOfficialOnly] = useState<boolean>(true);
   const [mode, setMode] = useState<'profesional' | 'simple'>('profesional');
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userRole, setUserRole] = useState<UserRole>(() => StorageEngine.getRole());
 
   const casesCount = StorageEngine.getCases().length;
   const normsCount = StorageEngine.getNorms().length;
 
+  useEffect(() => {
+    // Check existing server session on boot
+    ApiClient.getMe().then((user) => {
+      if (user) {
+        setCurrentUser(user);
+        setUserRole(user.role);
+      }
+    });
+  }, []);
+
   const handleRoleChange = (role: UserRole) => {
     setUserRole(role);
     StorageEngine.setRole(role);
+  };
+
+  const handleLogout = () => {
+    ApiClient.logout().catch(() => {});
+    setCurrentUser(null);
   };
 
   return (
@@ -36,10 +53,13 @@ export function App() {
         setOfficialOnly={setOfficialOnly}
         mode={mode}
         setMode={setMode}
+        currentUser={currentUser}
+        setCurrentUser={setCurrentUser}
         userRole={userRole}
         setUserRole={handleRoleChange}
         casesCount={casesCount}
         normsCount={normsCount}
+        onLogout={handleLogout}
       />
 
       {/* Main View Area */}
@@ -55,7 +75,7 @@ export function App() {
         {activeTab === 'calculator' && <FeeCalculator />}
         {activeTab === 'portals' && <OfficialPortals />}
         {activeTab === 'admin' && (
-          <AdminPanel userRole={userRole} setUserRole={handleRoleChange} />
+          <AdminPanel userRole={userRole} setUserRole={handleRoleChange} currentUser={currentUser} />
         )}
       </main>
 

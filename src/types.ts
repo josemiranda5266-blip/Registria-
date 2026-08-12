@@ -236,7 +236,31 @@ export interface AIChatMessage {
   isOfficialOnlyMode?: boolean;
 }
 
-export type UserRole = 'ADMIN' | 'MANDATARIO' | 'ASISTENTE' | 'LECTOR' | 'CLIENTE';
+export type UserRole = 'ADMIN' | 'MANDATARIO' | 'ASISTENTE' | 'CONSULTA' | 'LECTOR';
+
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  createdAt: string;
+  lastLogin?: string;
+  active: boolean;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  userId?: string;
+  username?: string;
+  userRole?: UserRole;
+  action: string;
+  entity: 'CASE' | 'CLIENT' | 'NORM' | 'USER' | 'DOCUMENT' | 'SYSTEM' | 'AUTH';
+  entityId?: string;
+  details: string;
+  ipAddress?: string;
+}
 
 export interface SystemAuditItem {
   id: string;

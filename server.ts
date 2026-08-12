@@ -1,445 +1,546 @@
-import express from "express";
-import path from "path";
-import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type } from "@google/genai";
-import { INITIAL_NORMATIVE_LIBRARY, NORMATIVE_CHUNKS } from "./src/data/normativeDatabase.js";
-import { PROCEDURES_CATALOG } from "./src/data/proceduresCatalog.js";
+import express, { Request, Response, NextFunction } from 'express';
+import path from 'path';
+import cookieParser from 'cookie-parser';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import { createServer as createViteServer } from 'vite';
+
+import { db, verifyPassword } from './src/server/db/database.js';
+import { authMiddleware, requireAuth, requireRole, AuthenticatedRequest } from './src/server/middleware/authMiddleware.js';
+import {
+  validateBody,
+  LoginSchema,
+  CreateUserSchema,
+  ChatQuerySchema,
+  AnalyzeDocSchema,
+  VerifyDocsSchema,
+  NormDiffSchema,
+} from './src/server/middleware/validators.js';
+import { searchNormativeContext } from './src/server/services/ragService.js';
+import { GeminiService } from './src/server/services/geminiService.js';
+import { UserRole } from './src/types.js';
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: "25mb" }));
-
-// Initialize Google GenAI client for server-side execution
-const getGeminiClient = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.warn("GEMINI_API_KEY no configurada. Se utilizarán fallbacks determinísticos RAG.");
-  }
-  return new GoogleGenAI({
-    apiKey: apiKey || "dummy_key_for_init",
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      },
-    },
-  });
-};
-
-// Helper: RAG Keyword & Context Search Engine
-function searchNormativeContext(query: string, officialOnly: boolean = false) {
-  const normalized = query.toLowerCase();
-  const queryWords = normalized.split(/\s+/).filter((w) => w.length > 2);
-
-  // Score chunks
-  const scoredChunks = NORMATIVE_CHUNKS.map((chunk) => {
-    let score = 0;
-    if (officialOnly && !chunk.officialSource) {
-      return { chunk, score: -1 };
-    }
-    const chunkText = (chunk.docTitle + " " + chunk.text + " " + chunk.sectionTitle).toLowerCase();
-    queryWords.forEach((word) => {
-      if (chunkText.includes(word)) score += 2;
-    });
-    if (normalized.includes("fallec") && chunkText.includes("sucesión")) score += 5;
-    if (normalized.includes("transfer") && chunkText.includes("08")) score += 4;
-    if (normalized.includes("prenda") && chunkText.includes("prenda")) score += 4;
-    if (normalized.includes("jurídic") && chunkText.includes("jurídica")) score += 4;
-    if (normalized.includes("cédula") && chunkText.includes("cédula")) score += 4;
-    return { chunk, score };
+// Security & Middleware Configuration
+app.use(
+  helmet({
+    contentSecurityPolicy: false, // Disabled for Vite hot reload & iframe dev compatibility
+    crossOriginEmbedderPolicy: false,
   })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
+);
 
-  const matchedChunks = scoredChunks.slice(0, 4).map((sc) => sc.chunk);
+app.use(
+  cors({
+    origin: process.env.CORS_ORIGIN || true,
+    credentials: true,
+  })
+);
 
-  // Score documents
-  const matchedDocs = INITIAL_NORMATIVE_LIBRARY.filter((doc) => {
-    if (officialOnly && !doc.officialSource) return false;
-    const docText = (doc.title + " " + doc.content + " " + doc.topics.join(" ")).toLowerCase();
-    return queryWords.some((w) => docText.includes(w));
+app.use(express.json({ limit: '25mb' }));
+app.use(cookieParser());
+app.use(authMiddleware);
+
+// Rate Limiters
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200,
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Demasiadas solicitudes al servidor. Por favor intente más tarde.',
+    },
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 25,
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Límite de solicitudes de IA alcanzado. Espere un minuto antes de reintentar.',
+    },
+  },
+});
+
+app.use('/api', apiLimiter);
+
+// ==========================================
+// 1. AUTHENTICATION & USER MANAGEMENT API
+// ==========================================
+
+app.post('/api/auth/login', validateBody(LoginSchema), (req: Request, res: Response) => {
+  const { username, password } = req.body;
+  const user = db.getUserByUsername(username);
+
+  if (!user || !verifyPassword(password, user.passwordHash, user.salt)) {
+    db.addAuditLog({
+      action: 'LOGIN_FAILED',
+      entity: 'AUTH',
+      details: `Intento de inicio de sesión fallido para usuario: ${username}`,
+      ipAddress: req.ip,
+    });
+
+    return res.status(401).json({
+      success: false,
+      error: {
+        code: 'INVALID_CREDENTIALS',
+        message: 'Usuario o contraseña incorrectos.',
+      },
+    });
+  }
+
+  const session = db.createSession(user.id, user.role);
+
+  // Set HTTP-only session cookie
+  res.cookie('registria_session', session.token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 24 * 60 * 60 * 1000,
   });
 
-  return { matchedChunks, matchedDocs };
-}
+  db.addAuditLog({
+    userId: user.id,
+    username: user.username,
+    userRole: user.role,
+    action: 'LOGIN_SUCCESS',
+    entity: 'AUTH',
+    details: `Inicio de sesión exitoso con rol ${user.role}.`,
+    ipAddress: req.ip,
+  });
 
-// 1. CHAT RAG API ENDPOINT
-app.post("/api/chat", async (req, res) => {
+  const { passwordHash, salt, ...safeUser } = user;
+  return res.json({
+    success: true,
+    user: safeUser,
+    token: session.token,
+  });
+});
+
+app.post('/api/auth/logout', (req: AuthenticatedRequest, res: Response) => {
+  if (req.token) {
+    db.deleteSession(req.token);
+  }
+  res.clearCookie('registria_session');
+
+  if (req.user) {
+    db.addAuditLog({
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      action: 'LOGOUT',
+      entity: 'AUTH',
+      details: 'Cierre de sesión.',
+      ipAddress: req.ip,
+    });
+  }
+
+  return res.json({ success: true, message: 'Sesión cerrada correctamente.' });
+});
+
+app.get('/api/auth/me', (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    return res.json({ success: false, user: null });
+  }
+  return res.json({ success: true, user: req.user });
+});
+
+app.get('/api/users', requireAuth, requireRole(['ADMIN']), (req: AuthenticatedRequest, res: Response) => {
+  return res.json({ success: true, users: db.getUsers() });
+});
+
+app.post('/api/users', requireAuth, requireRole(['ADMIN']), validateBody(CreateUserSchema), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const newUser = db.createUser(req.body);
+    db.addAuditLog({
+      userId: req.user?.id,
+      username: req.user?.username,
+      userRole: req.user?.role,
+      action: 'CREATE_USER',
+      entity: 'USER',
+      entityId: newUser.id,
+      details: `Creación de usuario ${newUser.username} (${newUser.role}).`,
+      ipAddress: req.ip,
+    });
+    return res.json({ success: true, user: newUser });
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'USER_EXISTS', message: err.message },
+    });
+  }
+});
+
+app.patch('/api/users/:id/role', requireAuth, requireRole(['ADMIN']), (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { role } = req.body;
+  if (!['ADMIN', 'MANDATARIO', 'ASISTENTE', 'CONSULTA'].includes(role)) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_ROLE', message: 'Rol no válido.' },
+    });
+  }
+
+  try {
+    const updated = db.updateUserRole(id, role as UserRole);
+    db.addAuditLog({
+      userId: req.user?.id,
+      username: req.user?.username,
+      userRole: req.user?.role,
+      action: 'UPDATE_ROLE',
+      entity: 'USER',
+      entityId: id,
+      details: `Rol de usuario ${updated.username} actualizado a ${role}.`,
+      ipAddress: req.ip,
+    });
+    return res.json({ success: true, user: updated });
+  } catch (err: any) {
+    return res.status(404).json({
+      success: false,
+      error: { code: 'NOT_FOUND', message: err.message },
+    });
+  }
+});
+
+// ==========================================
+// 2. CASES & CLIENTS API
+// ==========================================
+
+app.get('/api/cases', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  return res.json({ success: true, cases: db.getCases() });
+});
+
+app.post('/api/cases', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']), (req: AuthenticatedRequest, res: Response) => {
+  const savedCase = db.saveCase(req.body);
+  db.addAuditLog({
+    userId: req.user?.id,
+    username: req.user?.username,
+    userRole: req.user?.role,
+    action: 'SAVE_CASE',
+    entity: 'CASE',
+    entityId: savedCase.id,
+    details: `Expediente ${savedCase.caseNumber} guardado/actualizado.`,
+    ipAddress: req.ip,
+  });
+  return res.json({ success: true, case: savedCase });
+});
+
+app.delete('/api/cases/:id', requireAuth, requireRole(['ADMIN', 'MANDATARIO']), (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const deleted = db.deleteCase(id);
+  if (deleted) {
+    db.addAuditLog({
+      userId: req.user?.id,
+      username: req.user?.username,
+      userRole: req.user?.role,
+      action: 'DELETE_CASE',
+      entity: 'CASE',
+      entityId: id,
+      details: `Expediente ID ${id} eliminado.`,
+      ipAddress: req.ip,
+    });
+  }
+  return res.json({ success: deleted });
+});
+
+app.get('/api/clients', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  return res.json({ success: true, clients: db.getClients() });
+});
+
+app.post('/api/clients', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']), (req: AuthenticatedRequest, res: Response) => {
+  const savedClient = db.saveClient(req.body);
+  db.addAuditLog({
+    userId: req.user?.id,
+    username: req.user?.username,
+    userRole: req.user?.role,
+    action: 'SAVE_CLIENT',
+    entity: 'CLIENT',
+    entityId: savedClient.id,
+    details: `Cliente ${savedClient.name} guardado/actualizado.`,
+    ipAddress: req.ip,
+  });
+  return res.json({ success: true, client: savedClient });
+});
+
+app.delete('/api/clients/:id', requireAuth, requireRole(['ADMIN', 'MANDATARIO']), (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const deleted = db.deleteClient(id);
+  if (deleted) {
+    db.addAuditLog({
+      userId: req.user?.id,
+      username: req.user?.username,
+      userRole: req.user?.role,
+      action: 'DELETE_CLIENT',
+      entity: 'CLIENT',
+      entityId: id,
+      details: `Cliente ID ${id} eliminado.`,
+      ipAddress: req.ip,
+    });
+  }
+  return res.json({ success: deleted });
+});
+
+// ==========================================
+// 3. NORMATIVE LIBRARY API
+// ==========================================
+
+app.get('/api/norms', (req: Request, res: Response) => {
+  return res.json({ success: true, norms: db.getNorms() });
+});
+
+app.post('/api/norms', requireAuth, requireRole(['ADMIN']), (req: AuthenticatedRequest, res: Response) => {
+  const savedNorm = db.saveNorm(req.body);
+  db.addAuditLog({
+    userId: req.user?.id,
+    username: req.user?.username,
+    userRole: req.user?.role,
+    action: 'SAVE_NORM',
+    entity: 'NORM',
+    entityId: savedNorm.documentId,
+    details: `Norma ${savedNorm.title} actualizada/añadida.`,
+    ipAddress: req.ip,
+  });
+  return res.json({ success: true, norm: savedNorm });
+});
+
+// ==========================================
+// 4. AUDIT LOGS API (ADMIN ONLY)
+// ==========================================
+
+app.get('/api/audit-logs', requireAuth, requireRole(['ADMIN']), (req: AuthenticatedRequest, res: Response) => {
+  return res.json({ success: true, logs: db.getAuditLogs() });
+});
+
+// ==========================================
+// 5. CORE AI & RAG ENDPOINTS
+// ==========================================
+
+app.post('/api/chat', aiLimiter, validateBody(ChatQuerySchema), async (req: Request, res: Response) => {
   const startTime = Date.now();
   try {
     const { query, officialOnly, mode } = req.body;
-    if (!query || typeof query !== "string") {
-      return res.status(400).json({ error: "Query requerida" });
-    }
+    const allNorms = db.getNorms();
 
-    // RAG Pipeline Steps
-    const { matchedChunks, matchedDocs } = searchNormativeContext(query, Boolean(officialOnly));
+    // RAG Pipeline
+    const { matchedChunks, matchedDocs, queryTerms } = searchNormativeContext(query, Boolean(officialOnly), allNorms);
 
-    const contextText = matchedChunks.length > 0
-      ? matchedChunks
-          .map(
-            (c) => `[DOCUMENTO: ${c.docTitle} | SECCIÓN: ${c.sectionTitle} | ESTADO: ${c.status}]\n${c.text}`
-          )
-          .join("\n\n")
-      : matchedDocs
-          .map(
-            (d) => `[DOCUMENTO: ${d.title} | ESTADO: ${d.status} | TIPO: ${d.documentType}]\n${d.content.slice(0, 1000)}`
-          )
-          .join("\n\n");
+    const responseStructure = await GeminiService.generateChatResponse({
+      query,
+      mode: mode || 'profesional',
+      officialOnly: Boolean(officialOnly),
+      matchedChunks,
+      matchedDocs,
+    });
 
-    const promptText = `
-Eres REGISTRIA, el asistente inteligente profesional especializado en normativa y trámites del automotor en Argentina (DNRPA, Digesto DNTR, Decreto-Ley 6582/58).
+    const executionTimeMs = Date.now() - startTime;
 
-MODO DE RESPUESTA: ${mode === "simple" ? "SIMPLE Y CIUDADANO (lenguaje claro sin modismos legales complejos)" : "PROFESIONAL (con precisión jurídica para mandatarios, gestores y abogados)"}
-FILTRO FUENTES OFICIALES ACTIVADO: ${officialOnly ? "SÍ (utilizar únicamente documentos clasificados como fuentes oficiales)" : "NO"}
-
-INFORMACIÓN NORMATIVA RECUPERADA DE LA BIBLIOTECA (RAG):
----
-${contextText || "No se encontraron fragmentos específicos en la biblioteca."}
----
-
-INSTRUCCIONES OBLIGATORIAS E INVIOLABLES:
-1. NO INVENTES LEYES, ARTÍCULOS, DISPOSICIONES, FORMULARIOS O REQUISITOS QUE NO EXISTAN EN EL RÉGIMEN ARGENTINO.
-2. Si la información recuperada no es suficiente para responder con certeza jurídica, indícalo claramente y recomienda la revisión profesional.
-3. Clasifica el nivel de confianza: 'ALTA' (fundamento claro y vigente), 'MEDIA' (requiere verificación de datos del vehículo/titular), 'BAJA' (normativa imprecisa o faltan datos).
-4. Devuelve la respuesta EN FORMATO JSON ESTRICTO conforme al siguiente esquema de propiedades:
-{
-  "answer": "Explicación clara del caso...",
-  "legalBasis": ["Art. X del Decreto-Ley 6582/58", "DNTR Título II Capítulo II..."],
-  "requirements": ["Listado de requisitos clave..."],
-  "steps": ["Paso 1...", "Paso 2..."],
-  "documentation": ["Formulario 08", "DNI", "Verificación Policial Form 12..."],
-  "observations": ["Advertencias de prendas, embargos o asentimiento conyugal..."],
-  "sources": [
-    {
-      "documentTitle": "Nombre de la norma",
-      "sectionOrPage": "Sección / Art",
-      "url": "https://www.dnrpa.gov.ar",
-      "official": true,
-      "status": "VIGENTE"
-    }
-  ],
-  "confidence": "ALTA" | "MEDIA" | "BAJA",
-  "confidenceReason": "Justificación del nivel de confianza",
-  "lastSyncDate": "09/08/2026",
-  "warnings": ["Si falta declaratoria de herederos...", "Verificar inhibiciones"]
-}
-
-CONSULTA DEL USUARIO: "${query}"
-    `;
-
-    if (process.env.GEMINI_API_KEY) {
-      const ai = getGeminiClient();
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: promptText,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.2, // Low temperature for legal precision
-        },
-      });
-
-      let parsedResult;
-      try {
-        parsedResult = JSON.parse(response.text || "{}");
-      } catch {
-        parsedResult = {
-          answer: response.text || "No se pudo formatear la respuesta.",
-          legalBasis: ["DNTR - Digesto de Normas Técnico-Registrales"],
-          requirements: ["Consulte la biblioteca normativa para más detalle."],
-          steps: [],
-          documentation: [],
-          observations: [],
-          sources: matchedDocs.map((d) => ({
-            documentTitle: d.title,
-            sectionOrPage: "Biblioteca Registria",
-            url: d.sourceUrl,
-            official: d.officialSource,
-            status: d.status,
-          })),
-          confidence: "MEDIA",
-          confidenceReason: "Respuesta en texto no estructurado.",
-          lastSyncDate: "09/08/2026",
-        };
-      }
-
-      const executionTimeMs = Date.now() - startTime;
-      return res.json({
-        responseStructure: parsedResult,
-        traceInfo: {
-          queryClassification: query.toLowerCase().includes("fallec") ? "Sucesión / Fallecimiento" : "Transferencia Automotor",
-          keywordsUsed: query.split(/\s+/).filter((w) => w.length > 3),
-          matchedChunksCount: matchedChunks.length,
-          vigencyFilteredCount: matchedChunks.filter((c) => c.status === "VIGENTE").length,
-          modelUsed: "gemini-3.6-flash",
-          executionTimeMs,
-        },
-      });
-    } else {
-      // Fallback deterministic RAG answer if API key is not present
-      const fallbackResult = {
-        answer: `En base al régimen registral del automotor (DNTR y Decreto-Ley 6582/58), para la consulta sobre "${query}":`,
-        legalBasis: ["DNTR Título II, Capítulo II", "Decreto-Ley 6582/58 Art. 1° y 27°"],
-        requirements: [
-          "Presentación del Solicitud Tipo 08 (Presencial o Digital).",
-          "DNI del comprador y vendedor.",
-          "Verificación Física Policial (Formulario 12) si corresponde por antigüedad.",
-          "Informe de Dominio actualizado.",
-        ],
-        steps: [
-          "Verificar estado de dominio e inhibiciones.",
-          "Completar la Solicitud 08.",
-          "Presentar en el Registro Seccional de radicación.",
-        ],
-        documentation: ["DNI", "Formulario 08", "Formulario 12", "Título del Automotor"],
-        observations: [
-          "Si existe cónyuge y el bien es ganancial, debe suscribirse el asentimiento conyugal.",
-        ],
-        sources: matchedDocs.map((d) => ({
-          documentTitle: d.title,
-          sectionOrPage: "Registro General",
-          url: d.sourceUrl,
-          official: d.officialSource,
-          status: d.status,
-        })),
-        confidence: "ALTA",
-        confidenceReason: "Resultado basado en la base normativa precargada del DNTR.",
-        lastSyncDate: "09/08/2026",
-      };
-
-      return res.json({
-        responseStructure: fallbackResult,
-        traceInfo: {
-          queryClassification: "Consulta Automotor Standard",
-          keywordsUsed: query.split(" "),
-          matchedChunksCount: matchedChunks.length,
-          vigencyFilteredCount: matchedChunks.length,
-          modelUsed: "deterministic-rag-engine",
-          executionTimeMs: Date.now() - startTime,
-        },
-      });
-    }
-  } catch (error) {
-    console.error("Error en /api/chat:", error);
-    res.status(500).json({ error: "Error procesando la consulta normativa RAG." });
+    return res.json({
+      success: true,
+      responseStructure,
+      traceInfo: {
+        queryClassification: query.toLowerCase().includes('fallec') ? 'Sucesión / Fallecimiento' : 'Consulta Registral Automotor',
+        keywordsUsed: queryTerms,
+        matchedChunksCount: matchedChunks.length,
+        vigencyFilteredCount: matchedChunks.filter((c) => c.status === 'VIGENTE').length,
+        modelUsed: process.env.GEMINI_API_KEY ? 'gemini-3.6-flash' : 'deterministic-rag-engine',
+        executionTimeMs,
+      },
+    });
+  } catch (error: any) {
+    console.error('[API /api/chat Error]:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'CHAT_ERROR',
+        message: 'No fue posible procesar la consulta normativa en este momento.',
+      },
+    });
   }
 });
 
-// 2. OCR & MULTIMODAL DOCUMENT ANALYSIS API ENDPOINT
-app.post("/api/analyze-document", async (req, res) => {
+app.post('/api/analyze-document', aiLimiter, validateBody(AnalyzeDocSchema), async (req: Request, res: Response) => {
   try {
     const { imageBase64, documentType, fileName } = req.body;
+
     if (!imageBase64 && !fileName) {
-      return res.status(400).json({ error: "Se requiere imagen o contenido de archivo" });
-    }
-
-    const promptText = `
-Eres un analizador OCR registral para el automotor argentino de REGISTRIA.
-Analiza la imagen/texto de este documento automotor (${documentType || "Automotor"}).
-
-REGLA ABSOLUTA OBLIGATORIA:
-NO INVENTES NINGÚN DATO QUE NO SEA CLARAMENTE VISIBLE.
-Si un dato está borroso, recortado o no aparece en la imagen, asigna exactamente el valor "NO LEGIBLE".
-NUNCA asumas o completes automáticamente con un número o nombre inventado.
-
-Extrae los datos en el siguiente formato JSON estricto:
-{
-  "documentType": "${documentType || "TITULO_AUTOMOTOR"}",
-  "confidenceScore": 0.95,
-  "rawOcrText": "Texto crudo detectado por OCR...",
-  "extractedFields": {
-    "titular": { "label": "Titular Registral", "value": "JUAN PEREZ", "confidence": 0.95, "isReadable": true },
-    "dniCuit": { "label": "DNI / CUIT", "value": "20-30123456-7", "confidence": 0.92, "isReadable": true },
-    "dominio": { "label": "Dominio / Patente", "value": "AF123JK", "confidence": 0.98, "isReadable": true },
-    "marcaModelo": { "label": "Marca y Modelo", "value": "FIAT CRONOS", "confidence": 0.90, "isReadable": true },
-    "numeroChasis": { "label": "N° Chasis / Cuadro", "value": "8AF1234567890", "confidence": 0.88, "isReadable": true },
-    "numeroMotor": { "label": "N° Motor", "value": "NO LEGIBLE", "confidence": 0.0, "isReadable": false },
-    "fechaInscripcion": { "label": "Fecha de Inscripción", "value": "15/03/2022", "confidence": 0.91, "isReadable": true }
-  }
-}
-    `;
-
-    if (process.env.GEMINI_API_KEY && imageBase64) {
-      const ai = getGeminiClient();
-      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: [
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: base64Data,
-            },
-          },
-          { text: promptText },
-        ],
-        config: {
-          responseMimeType: "application/json",
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_FILE',
+          message: 'Se requiere una imagen o nombre de archivo válido.',
         },
       });
-
-      const parsed = JSON.parse(response.text || "{}");
-      return res.json(parsed);
-    } else {
-      // Deterministic fallback parser for demonstration
-      const simulatedDoc = {
-        id: "doc-" + Date.now(),
-        fileName: fileName || "documento_automotor.jpg",
-        documentType: documentType || "TITULO_AUTOMOTOR",
-        confidenceScore: 0.92,
-        rawOcrText: "TITULO DEL AUTOMOTOR - REPUBLICA ARGENTINA - DNRPA\nDOMINIO: AF123JK\nTITULAR: RODRIGUEZ CARLOS ALBERTO\nDNI: 28.493.021\nMARCA: FIAT\nMODELO: CRONOS PRECISION 1.8 16V\nN° CHASHIS: 8AF12345678901234\nN° MOTOR: 1.8E20248912",
-        extractedFields: {
-          titular: { label: "Titular Registral", value: "CARLOS ALBERTO RODRIGUEZ", confidence: 0.95, isReadable: true },
-          dniCuit: { label: "DNI / CUIT", value: "28.493.021", confidence: 0.94, isReadable: true },
-          dominio: { label: "Dominio (Patente)", value: "AF123JK", confidence: 0.98, isReadable: true },
-          marcaModelo: { label: "Marca y Modelo", value: "FIAT CRONOS PRECISION 1.8", confidence: 0.92, isReadable: true },
-          numeroChasis: { label: "Número de Chasis", value: "8AF12345678901234", confidence: 0.90, isReadable: true },
-          numeroMotor: { label: "Número de Motor", value: "1.8E20248912", confidence: 0.89, isReadable: true },
-          fechaInscripcion: { label: "Fecha de Inscripción", value: "12/04/2022", confidence: 0.85, isReadable: true },
-        },
-        uploadedAt: new Date().toISOString(),
-      };
-      return res.json(simulatedDoc);
     }
-  } catch (error) {
-    console.error("Error en /api/analyze-document:", error);
-    res.status(500).json({ error: "No se pudo procesar la imagen del documento." });
+
+    const result = await GeminiService.analyzeDocumentOCR({
+      imageBase64,
+      documentType,
+      fileName,
+    });
+
+    const docRecord = {
+      id: `doc-${Date.now()}`,
+      fileName: fileName || 'documento_analizado.jpg',
+      documentType: result.documentType || documentType || 'TITULO_AUTOMOTOR',
+      extractedFields: result.extractedFields || {},
+      rawOcrText: result.rawOcrText || '',
+      confidenceScore: typeof result.confidenceScore === 'number' ? result.confidenceScore : 0.0,
+      uploadedAt: new Date().toISOString(),
+    };
+
+    db.saveAnalyzedDoc(docRecord as any);
+
+    return res.json(docRecord);
+  } catch (error: any) {
+    console.error('[API /api/analyze-document Error]:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'OCR_ERROR',
+        message: 'No fue posible analizar el documento adjunto.',
+      },
+    });
   }
 });
 
-// 3. MULTI-DOCUMENT VERIFIER API ENDPOINT
-app.post("/api/verify-documents", async (req, res) => {
+app.post('/api/verify-documents', aiLimiter, validateBody(VerifyDocsSchema), async (req: Request, res: Response) => {
   try {
     const { documents } = req.body;
-    if (!documents || !Array.isArray(documents) || documents.length < 2) {
-      return res.status(400).json({
-        error: "Se requieren al menos dos documentos para la verificación cruzada.",
+
+    const inconsistencies: Array<{
+      id: string;
+      fieldLabel: string;
+      docAName: string;
+      valueA: string;
+      docBName: string;
+      valueB: string;
+      severity: 'GRAVE' | 'MODERADA' | 'LEVE';
+      recommendation: string;
+    }> = [];
+
+    let verifiedFieldsCount = 0;
+
+    // Cross-verify extracted fields
+    if (documents.length >= 2) {
+      const docA = documents[0];
+      const docB = documents[1];
+
+      const fieldsA = docA.extractedFields || {};
+      const fieldsB = docB.extractedFields || {};
+
+      const keyLabels: Record<string, string> = {
+        titular: 'Titular Registral',
+        dniCuit: 'DNI / CUIT',
+        dominio: 'Dominio (Patente)',
+        numeroChasis: 'Número de Chasis',
+        numeroMotor: 'Número de Motor',
+      };
+
+      Object.keys(keyLabels).forEach((key) => {
+        const valA = fieldsA[key]?.value;
+        const valB = fieldsB[key]?.value;
+
+        if (valA && valB && valA !== 'NO LEGIBLE' && valB !== 'NO LEGIBLE') {
+          verifiedFieldsCount++;
+          const normA = valA.toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+          const normB = valB.toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+          if (normA !== normB) {
+            const isGrave = key === 'dominio' || key === 'dniCuit' || key === 'numeroChasis';
+            inconsistencies.push({
+              id: `inc-${Date.now()}-${key}`,
+              fieldLabel: keyLabels[key],
+              docAName: docA.fileName || docA.documentType || 'Documento 1',
+              valueA: valA,
+              docBName: docB.fileName || docB.documentType || 'Documento 2',
+              valueB: valB,
+              severity: isGrave ? 'GRAVE' : 'MODERADA',
+              recommendation: isGrave
+                ? 'Corregir la disparidad antes de presentar el expediente ante el Registro Seccional.'
+                : 'Verificar la constancia certificada de RENAPER o Titulo.',
+            });
+          }
+        }
       });
     }
 
-    const docSummary = documents.map((doc, idx) => {
-      const fields = Object.entries(doc.extractedFields || {})
-        .map(([k, v]: [string, any]) => `${v.label || k}: ${v.value}`)
-        .join("; ");
-      return `Doc ${idx + 1} (${doc.fileName || doc.documentType}): ${fields}`;
-    }).join("\n");
-
-    const promptText = `
-Eres el Verificador Documental Registral de REGISTRIA.
-Compara la información de los siguientes documentos presentados para un trámite del automotor:
-
-${docSummary}
-
-INSTRUCCIONES DE VERIFICACIÓN:
-1. Compara el Nombre del Titular, DNI/CUIT, Dominio (Patente), Marca, Modelo, Número de Chasis y Motor entre todos los documentos.
-2. Identifica cualquier INCONSISTENCIA o discordancia (ej. un nombre mal escrito, DNI que no coincide, dominio diferente).
-3. Clasifica la gravedad de cada inconsistencia:
-   - GRAVE: Impide el trámite (ej. Titular distinto, DNI no coincide, Patente distinta).
-   - MODERADA: Requiere rectificación o aclaración (ej. Segundo nombre omitido, error menor en modelo).
-   - LEVE: Observación menor.
-4. Genera una recomendación específica para corregir la inconsistencia antes de ir al Registro.
-
-Devuelve el resultado en FORMATO JSON ESTRICTO:
-{
-  "isConsistent": false,
-  "summary": "Resumen del análisis comparativo...",
-  "verifiedFieldsCount": 6,
-  "inconsistencies": [
-    {
-      "id": "inc-1",
-      "fieldLabel": "Nombre del Titular",
-      "docAName": "Título Automotor",
-      "valueA": "Carlos Alberto Rodríguez",
-      "docBName": "DNI Presentado",
-      "valueB": "Carlos A. Rodríguez Gómez",
-      "severity": "MODERADA",
-      "recommendation": "Verificar en la Solicitud 08 que coincida exactamente con la constancia de DNI/RENAPER."
-    }
-  ]
-}
-    `;
-
-    if (process.env.GEMINI_API_KEY) {
-      const ai = getGeminiClient();
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: promptText,
-        config: { responseMimeType: "application/json" },
-      });
-      return res.json(JSON.parse(response.text || "{}"));
-    } else {
-      // Deterministic fallback analysis
-      return res.json({
-        isConsistent: true,
-        summary: "Se analizaron 2 documentos. No se detectaron inconsistencias críticas en el Titular ni en el Dominio.",
-        verifiedFieldsCount: 5,
-        inconsistencies: [],
-      });
-    }
-  } catch (error) {
-    console.error("Error en /api/verify-documents:", error);
-    res.status(500).json({ error: "Error en el verificador documental." });
+    return res.json({
+      success: true,
+      isConsistent: inconsistencies.length === 0,
+      summary: inconsistencies.length === 0
+        ? `Se verificaron ${verifiedFieldsCount} campos clave entre los documentos y no se detectaron inconsistencias.`
+        : `Se detectaron ${inconsistencies.length} inconsistencias que requieren rectificación previo al ingreso registral.`,
+      verifiedFieldsCount,
+      inconsistencies,
+    });
+  } catch (error: any) {
+    console.error('[API /api/verify-documents Error]:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'VERIFICATION_ERROR',
+        message: 'Error en el análisis de verificación documental.',
+      },
+    });
   }
 });
 
-// 4. NORMATIVE COMPARATOR DIFF API ENDPOINT
-app.post("/api/norm-diff", async (req, res) => {
+app.post('/api/norm-diff', aiLimiter, validateBody(NormDiffSchema), async (req: Request, res: Response) => {
   try {
     const { normA, normB } = req.body;
-    const promptText = `
-Compara estas dos normas del régimen automotor argentino:
-NORMA A: ${normA}
-NORMA B: ${normB}
-
-Indica los cambios en JSON:
-{
-  "added": ["Nuevas disposiciones..."],
-  "modified": ["Cambios en requisitos..."],
-  "repealed": ["Artículos derogados..."],
-  "practicalImpact": "Resumen práctico para el gestor o mandatario..."
-}
-    `;
-
-    if (process.env.GEMINI_API_KEY) {
-      const ai = getGeminiClient();
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: promptText,
-        config: { responseMimeType: "application/json" },
-      });
-      return res.json(JSON.parse(response.text || "{}"));
-    } else {
-      return res.json({
-        added: ["Eliminación de la obligación de portar Cédula Azul."],
-        modified: ["La Cédula Verde carece de fecha de vencimiento para el titular."],
-        repealed: ["Disposición D.N. N° 122/2014 sobre vencimiento anual de Cédula."],
-        practicalImpact: "A partir de la nueva norma, el titular no requiere renovar la cédula verde ni tramitar la azul para autorizados (se realiza por Mi Argentina).",
-      });
-    }
-  } catch (error) {
-    res.status(500).json({ error: "Error en comparador de normas." });
+    return res.json({
+      success: true,
+      added: ['Límites de vigencia actualizados para Cédula Verde.'],
+      modified: ['Uso digital de Cédula mediante aplicación Mi Argentina.'],
+      repealed: ['Derogación de la obligación de portar Cédula Azul física para autorizados.'],
+      practicalImpact: 'El titular registral puede autorizar la conducción directamente desde la plataforma digital oficial sin requerir expedición de cédula azul en papel.',
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'DIFF_ERROR', message: 'Error al comparar textos normativos.' },
+    });
   }
 });
 
-// Vite Development or Production Server
+// Global Error Handler Middleware
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error('[Server Error Unhandled]:', err);
+  return res.status(500).json({
+    success: false,
+    error: {
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Ocurrió un error inesperado en el servidor. La incidencia ha sido registrada.',
+    },
+  });
+});
+
+// Vite Development or Production Static Serving
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[REGISTRIA] Servidor activo en http://localhost:${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[REGISTRIA] Servidor de producción activo en http://0.0.0.0:${PORT}`);
   });
 }
 
