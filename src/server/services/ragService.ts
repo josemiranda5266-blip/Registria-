@@ -31,7 +31,12 @@ export function searchNormativeContext(
   const rawWords = normalizedQuery.split(/\s+/).map((w) => w.replace(/[^a-z0-9]/g, '')).filter((w) => w.length > 2);
   const queryTerms = Array.from(new Set(rawWords.filter((w) => !STOP_WORDS.has(w))));
 
-  const docsToSearch = allNormsFromDb && allNormsFromDb.length > 0 ? allNormsFromDb : INITIAL_NORMATIVE_LIBRARY;
+  // SINGLE SOURCE OF TRUTH: If DATABASE_URL is set, use allNormsFromDb exclusively (no silent fallback).
+  // INITIAL_NORMATIVE_LIBRARY is strictly used for local development when DATABASE_URL is absent.
+  const isPostgresConfigured = Boolean(process.env.DATABASE_URL);
+  const docsToSearch = isPostgresConfigured
+    ? (allNormsFromDb || [])
+    : (allNormsFromDb && allNormsFromDb.length > 0 ? allNormsFromDb : INITIAL_NORMATIVE_LIBRARY);
 
   // Dynamically generate chunks from the active DB documents (Single Source of Truth)
   const chunksToSearch: NormChunk[] = docsToSearch.flatMap((doc) =>

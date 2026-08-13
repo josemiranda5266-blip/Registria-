@@ -23,7 +23,7 @@ import {
 } from './src/server/middleware/validators.js';
 import { searchNormativeContext } from './src/server/services/ragService.js';
 import { GeminiService } from './src/server/services/geminiService.js';
-import { UserRole } from './src/types.js';
+import { UserRole, ProcedureCase, Client } from './src/types.js';
 
 const app = express();
 const PORT = 3000;
@@ -310,10 +310,21 @@ app.get('/api/cases', requireAuth, async (req: AuthenticatedRequest, res: Respon
 });
 
 app.post('/api/cases', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']), validateBody(CreateCaseSchema), async (req: AuthenticatedRequest, res: Response) => {
+  let existingCase: ProcedureCase | undefined;
+  if (req.body.id) {
+    existingCase = await db.getCaseById(req.body.id);
+    if (existingCase && existingCase.organizationId && req.user?.organizationId && existingCase.organizationId !== req.user.organizationId) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'No tiene permiso para modificar expedientes de otra organización.' },
+      });
+    }
+  }
+
   const caseData = {
     ...req.body,
-    organizationId: req.user?.organizationId || 'org-registria-default',
-    createdBy: req.user?.id,
+    organizationId: existingCase ? existingCase.organizationId : (req.user?.organizationId || 'org-registria-default'),
+    createdBy: existingCase ? existingCase.createdBy : req.user?.id,
     id: req.body.id || `case-${Date.now()}`,
     caseNumber: req.body.caseNumber || `EXP-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
   };
@@ -332,8 +343,33 @@ app.post('/api/cases', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTEN
   return res.json({ success: true, case: savedCase });
 });
 
+app.patch('/api/cases/:id', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']), async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const existingCase = await db.getCaseById(id);
+  if (!existingCase) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Expediente no encontrado.' } });
+  }
+  if (existingCase.organizationId && req.user?.organizationId && existingCase.organizationId !== req.user.organizationId) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Acceso denegado. El expediente pertenece a otra organización.' } });
+  }
+  const updatedCase = await db.saveCase({
+    ...existingCase,
+    ...req.body,
+    id: existingCase.id,
+    organizationId: existingCase.organizationId,
+  });
+  return res.json({ success: true, case: updatedCase });
+});
+
 app.delete('/api/cases/:id', requireAuth, requireRole(['ADMIN', 'MANDATARIO']), async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
+  const existingCase = await db.getCaseById(id);
+  if (!existingCase) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Expediente no encontrado.' } });
+  }
+  if (existingCase.organizationId && req.user?.organizationId && existingCase.organizationId !== req.user.organizationId) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Acceso denegado. El expediente pertenece a otra organización.' } });
+  }
   const deleted = await db.deleteCase(id);
   if (deleted) {
     await db.addAuditLog({
@@ -358,10 +394,21 @@ app.get('/api/clients', requireAuth, async (req: AuthenticatedRequest, res: Resp
 });
 
 app.post('/api/clients', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']), validateBody(CreateClientSchema), async (req: AuthenticatedRequest, res: Response) => {
+  let existingClient: Client | undefined;
+  if (req.body.id) {
+    existingClient = await db.getClientById(req.body.id);
+    if (existingClient && existingClient.organizationId && req.user?.organizationId && existingClient.organizationId !== req.user.organizationId) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'No tiene permiso para modificar clientes de otra organización.' },
+      });
+    }
+  }
+
   const clientData = {
     ...req.body,
-    organizationId: req.user?.organizationId || 'org-registria-default',
-    createdBy: req.user?.id,
+    organizationId: existingClient ? existingClient.organizationId : (req.user?.organizationId || 'org-registria-default'),
+    createdBy: existingClient ? existingClient.createdBy : req.user?.id,
     id: req.body.id || `cli-${Date.now()}`,
     casesCount: req.body.casesCount || 0,
     createdAt: req.body.createdAt || new Date().toISOString().split('T')[0],
@@ -381,8 +428,33 @@ app.post('/api/clients', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASIST
   return res.json({ success: true, client: savedClient });
 });
 
+app.patch('/api/clients/:id', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']), async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const existingClient = await db.getClientById(id);
+  if (!existingClient) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Cliente no encontrado.' } });
+  }
+  if (existingClient.organizationId && req.user?.organizationId && existingClient.organizationId !== req.user.organizationId) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Acceso denegado. El cliente pertenece a otra organización.' } });
+  }
+  const updatedClient = await db.saveClient({
+    ...existingClient,
+    ...req.body,
+    id: existingClient.id,
+    organizationId: existingClient.organizationId,
+  });
+  return res.json({ success: true, client: updatedClient });
+});
+
 app.delete('/api/clients/:id', requireAuth, requireRole(['ADMIN', 'MANDATARIO']), async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
+  const existingClient = await db.getClientById(id);
+  if (!existingClient) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Cliente no encontrado.' } });
+  }
+  if (existingClient.organizationId && req.user?.organizationId && existingClient.organizationId !== req.user.organizationId) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Acceso denegado. El cliente pertenece a otra organización.' } });
+  }
   const deleted = await db.deleteClient(id);
   if (deleted) {
     await db.addAuditLog({

@@ -220,7 +220,11 @@ export interface AIResponseStructure {
   sources: AIResponseSource[];
   confidence: 'ALTA' | 'MEDIA' | 'BAJA' | 'SIN_EVIDENCIA';
   confidenceReason?: string;
-  lastSyncDate: string;
+  lastSyncDate?: string | null;
+  generatedAt?: string;
+  indexedAt?: string;
+  verifiedAt?: string;
+  sourceVerifiedAt?: string;
   warnings?: string[];
 }
 

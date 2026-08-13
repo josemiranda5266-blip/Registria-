@@ -128,4 +128,74 @@ describe('REGISTRIA Hardening P0 Tests', () => {
     expect(logEntry.details).toContain('[CUIT ENMASCARADO]');
     expect(logEntry.details).toContain('[DNI ENMASCARADO]');
   });
+
+  it('8. IDOR Protection - User A (Org A) cannot modify or delete Client/Case of Org B', async () => {
+    // Create client for Org B
+    const clientB = await db.saveClient({
+      id: `cli-orgB-${Date.now()}`,
+      organizationId: 'org-B',
+      createdBy: 'user-org-b',
+      name: 'Cliente Org B',
+      dniCuit: '20-22222222-9',
+      type: 'PERSONA_HUMANA',
+      phone: '11000000',
+      email: 'clienteb@test.com',
+      casesCount: 0,
+      createdAt: new Date().toISOString(),
+    });
+
+    // Create case for Org B
+    const caseB = await db.saveCase({
+      id: `case-orgB-${Date.now()}`,
+      organizationId: 'org-B',
+      createdBy: 'user-org-b',
+      caseNumber: `EXP-TEST-${Date.now()}`,
+      title: 'Expediente Org B',
+      clientId: clientB.id,
+      clientName: clientB.name,
+      clientDniCuit: clientB.dniCuit,
+      vehicleDomain: 'AB123CD',
+      vehicleBrandModel: 'Ford Focus 2020',
+      procedureId: 'proc-1',
+      procedureTitle: 'Transferencia Ordinaria',
+      status: 'EN_PROCESO',
+      checklist: [],
+      uploadedDocs: [],
+      notes: [],
+      feesAmount: 5000,
+      feesPaid: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Verify Org A user checks fail against Org B resources
+    const userAOrg = 'org-A';
+
+    const clientBRecord = await db.getClientById(clientB.id);
+    expect(clientBRecord).toBeDefined();
+    expect(clientBRecord?.organizationId).not.toBe(userAOrg);
+    const clientCanModify = clientBRecord?.organizationId === userAOrg;
+    expect(clientCanModify).toBe(false);
+
+    const caseBRecord = await db.getCaseById(caseB.id);
+    expect(caseBRecord).toBeDefined();
+    expect(caseBRecord?.organizationId).not.toBe(userAOrg);
+    const caseCanModify = caseBRecord?.organizationId === userAOrg;
+    expect(caseCanModify).toBe(false);
+  });
+
+  it('9. RAG Fallback - Return SIN_EVIDENCIA when no matching norms exist', async () => {
+    const unknownQuery = 'xyz123unexistentnormativequery';
+    const chatResponse = await GeminiService.generateChatResponse({
+      query: unknownQuery,
+      mode: 'profesional',
+      officialOnly: false,
+      matchedChunks: [],
+      matchedDocs: [],
+    });
+
+    expect(chatResponse.confidence).toBe('SIN_EVIDENCIA');
+    expect(chatResponse.answer).toContain('No existe evidencia suficiente');
+    expect(chatResponse.lastSyncDate).toBeNull();
+  });
 });

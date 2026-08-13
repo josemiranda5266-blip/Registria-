@@ -8,13 +8,29 @@ import { RagChunkerService } from '../../services/ragChunker.js';
 
 const DEFAULT_ORG_ID = 'org-registria-default';
 
+function getSSLConfig(): boolean | { rejectUnauthorized: boolean; ca?: string } {
+  const dbSsl = process.env.DATABASE_SSL;
+  if (dbSsl === 'false') {
+    return false;
+  }
+  if (dbSsl === 'true' || process.env.NODE_ENV === 'production') {
+    const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'false' ? false : true;
+    const ca = process.env.DATABASE_CA;
+    return {
+      rejectUnauthorized,
+      ...(ca ? { ca } : {}),
+    };
+  }
+  return false;
+}
+
 export class PostgresRepository implements IRepository {
   private pool: any;
 
   constructor(connectionString: string) {
     this.pool = new Pool({
       connectionString,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+      ssl: getSSLConfig(),
       max: 10,
       idleTimeoutMillis: 30000,
     });
@@ -403,6 +419,9 @@ export class PostgresRepository implements IRepository {
     const r = res.rows[0];
     return {
       id: r.id,
+      organizationId: r.organization_id,
+      createdBy: r.created_by,
+      assignedTo: r.assigned_to,
       caseNumber: r.case_number,
       title: r.title,
       clientId: r.client_id,

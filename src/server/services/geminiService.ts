@@ -26,6 +26,24 @@ export class GeminiService {
   }): Promise<AIResponseStructure> {
     const { query, mode, officialOnly, matchedChunks, matchedDocs } = params;
 
+    const hasEvidence = matchedChunks.length > 0 || matchedDocs.length > 0;
+    if (!hasEvidence) {
+      return {
+        answer: 'No existe evidencia suficiente en la biblioteca normativa disponible para responder esta consulta.',
+        legalBasis: [],
+        requirements: [],
+        steps: [],
+        documentation: [],
+        observations: [],
+        sources: [],
+        confidence: 'SIN_EVIDENCIA',
+        confidenceReason: 'No se encontraron fragmentos o normas coincidentes en la biblioteca registral.',
+        lastSyncDate: null,
+        generatedAt: new Date().toISOString(),
+        warnings: ['Sin evidencia normativa recuperada.'],
+      };
+    }
+
     const contextText = matchedChunks.length > 0
       ? matchedChunks
           .map(
@@ -46,7 +64,7 @@ FILTRO FUENTES OFICIALES: ${officialOnly ? 'SÍ' : 'NO'}
 
 BIBLIOTECA NORMATIVA RECUPERADA (RAG):
 ---
-${contextText || 'No se encontraron fragmentos específicos en la biblioteca.'}
+${contextText}
 ---
 
 POLÍTICA DE CONFIANZA Y GROUNDING JURÍDICO (REGLAS OBLIGATORIAS E INVIOLABLES):
@@ -57,28 +75,27 @@ POLÍTICA DE CONFIANZA Y GROUNDING JURÍDICO (REGLAS OBLIGATORIAS E INVIOLABLES)
    - 'MEDIA': Existe información relevante pero requiere verificación adicional de datos o documentos del trámite.
    - 'BAJA': Evidencia débil o ambigua en el contexto recuperado.
    - 'SIN_EVIDENCIA': No existe evidencia o contexto suficiente para fundamentar la respuesta.
-4. SI FALTA INFORMACIÓN: Indica explícitamente "No existe evidencia suficiente en el contexto normativo disponible" y no afirmes el dato como un hecho verificado.
+4. SI FALTA INFORMACIÓN: Indica explícitamente "No existe evidencia suficiente en la biblioteca normativa disponible para responder esta consulta." y no afirmes el dato como un hecho verificado.
 
 FORMATO DE RESPUESTA JSON ESTRICTO:
 {
-  "answer": "Explicación clara y rigurosa basada exclusivamente en el régimen automotor...",
+  "answer": "Explicación clara y rigurosa basada exclusivamente en la normativa recuperada...",
   "legalBasis": ["Art. X Decreto-Ley 6582/58", "DNTR Título II Capítulo II..."],
-  "requirements": ["Requisito 1...", "Requisito 2..."],
+  "requirements": ["Requisito 1 si figura en la norma...", "Requisito 2..."],
   "steps": ["Paso 1...", "Paso 2..."],
-  "documentation": ["Formulario 08", "DNI", "Verificación Policial Form 12..."],
-  "observations": ["Puntos de atención, asentimiento conyugal, prendas o inhibiciones..."],
+  "documentation": ["Documento 1 si figura en la norma..."],
+  "observations": ["Puntos de atención citados en la norma..."],
   "sources": [
     {
-      "documentTitle": "Nombre de la norma recuperada",
+      "documentTitle": "Título de la norma recuperada",
       "sectionOrPage": "Sección o Artículo",
-      "url": "https://www.dnrpa.gov.ar",
+      "url": "https://url.oficial.gob.ar",
       "official": true,
       "status": "VIGENTE"
     }
   ],
   "confidence": "ALTA" | "MEDIA" | "BAJA" | "SIN_EVIDENCIA",
   "confidenceReason": "Justificación objetiva del nivel de confianza asignado",
-  "lastSyncDate": "2026-08-12",
   "warnings": ["Advertencias de validez o contingencias"]
 }
 
@@ -87,7 +104,6 @@ CONSULTA DEL USUARIO: "${query}"
 
     const ai = this.getClient();
     if (!ai) {
-      // Deterministic RAG fallback when API key is not present
       return this.getDeterministicFallback(query, matchedDocs, matchedChunks);
     }
 
@@ -109,50 +125,57 @@ CONSULTA DEL USUARIO: "${query}"
         return this.getDeterministicFallback(query, matchedDocs, matchedChunks);
       }
 
-      // Grounding & Source Filtering (P0.5: NO INVENTAR CITAS)
-      const validDocTitles = new Set(
-        [...matchedDocs.map((d) => d.title.toLowerCase()), ...matchedChunks.map((c) => c.docTitle.toLowerCase())]
-      );
-      const validSourceUrls = new Set(
-        [...matchedDocs.map((d) => d.sourceUrl)].filter((u): u is string => Boolean(u))
-      );
-
+      // Grounding & Source Filtering (REGLA 5: CITAS RAG — NO INVENTAR FUENTES)
       const filteredSources: AIResponseSource[] = [];
       if (Array.isArray(parsed.sources)) {
         for (const src of parsed.sources) {
           if (!src || typeof src !== 'object') continue;
-          const titleLower = (src.documentTitle || '').toLowerCase();
-          const matchesTitle = Array.from(validDocTitles).some(
-            (vt) => vt.includes(titleLower) || titleLower.includes(vt)
-          );
-          const matchesUrl = src.url && validSourceUrls.has(src.url);
+          const srcTitleNorm = (src.documentTitle || '').toLowerCase();
 
-          if (matchesTitle || matchesUrl) {
+          // Find exact or partial match in retrieved docs/chunks
+          const matchedDoc = matchedDocs.find(
+            (d) => d.title.toLowerCase().includes(srcTitleNorm) || srcTitleNorm.includes(d.title.toLowerCase()) || d.sourceUrl === src.url
+          ) || matchedChunks.find(
+            (c) => c.docTitle.toLowerCase().includes(srcTitleNorm) || srcTitleNorm.includes(c.docTitle.toLowerCase())
+          );
+
+          if (matchedDoc) {
+            const docObj = 'title' in matchedDoc ? matchedDoc : matchedDocs.find((d) => d.documentId === matchedDoc.documentId);
             filteredSources.push({
-              documentTitle: src.documentTitle || 'Norma Registral',
-              sectionOrPage: src.sectionOrPage || 'General',
-              url: matchesUrl ? src.url : matchedDocs.find((d) => d.title.toLowerCase().includes(titleLower))?.sourceUrl,
-              official: Boolean(src.official),
-              status: ['VIGENTE', 'DEROGADA', 'MODIFICADA', 'EN_REVISION', 'DESCONOCIDA'].includes(src.status)
-                ? src.status
-                : 'VIGENTE',
+              documentTitle: docObj?.title || src.documentTitle || 'Norma Registral',
+              sectionOrPage: src.sectionOrPage || 'Digesto DNTR',
+              url: docObj?.sourceUrl || undefined,
+              official: docObj?.officialSource ?? Boolean(src.official),
+              status: docObj?.status || 'VIGENTE',
             });
           }
         }
       }
 
-      // Calculate confidence objectively according to P0.5 rules
+      // If Gemini returned no valid matching sources, build strictly from retrieved matchedDocs
+      const finalSources = filteredSources.length > 0
+        ? filteredSources
+        : matchedDocs.map((d) => ({
+            documentTitle: d.title,
+            sectionOrPage: 'Digesto DNTR',
+            url: d.sourceUrl,
+            official: d.officialSource,
+            status: d.status,
+          }));
+
+      // Calculate confidence objectively
       let computedConfidence: 'ALTA' | 'MEDIA' | 'BAJA' | 'SIN_EVIDENCIA' = ['ALTA', 'MEDIA', 'BAJA', 'SIN_EVIDENCIA'].includes(
         parsed.confidence
       )
         ? parsed.confidence
         : 'MEDIA';
 
-      if (matchedChunks.length === 0 && matchedDocs.length === 0) {
-        computedConfidence = 'SIN_EVIDENCIA';
-      } else if (filteredSources.length === 0 && computedConfidence === 'ALTA') {
+      if (finalSources.length === 0 && computedConfidence === 'ALTA') {
         computedConfidence = 'MEDIA';
       }
+
+      // Last Sync Date: Use real uploadedAt/verifiedAt date from matched documents if present
+      const realSyncDate = matchedDocs.find((d) => d.uploadedAt)?.uploadedAt?.split('T')[0] || null;
 
       return {
         answer: parsed.answer || 'Respuesta procesada correctamente.',
@@ -161,16 +184,11 @@ CONSULTA DEL USUARIO: "${query}"
         steps: Array.isArray(parsed.steps) ? parsed.steps : [],
         documentation: Array.isArray(parsed.documentation) ? parsed.documentation : [],
         observations: Array.isArray(parsed.observations) ? parsed.observations : [],
-        sources: filteredSources.length > 0 ? filteredSources : matchedDocs.map((d) => ({
-          documentTitle: d.title,
-          sectionOrPage: 'Digesto DNTR',
-          url: d.sourceUrl,
-          official: d.officialSource,
-          status: d.status,
-        })),
+        sources: finalSources,
         confidence: computedConfidence,
         confidenceReason: parsed.confidenceReason || 'Análisis del contexto normativo recuperado.',
-        lastSyncDate: new Date().toISOString().split('T')[0],
+        lastSyncDate: realSyncDate,
+        generatedAt: new Date().toISOString(),
         warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
       };
     } catch (err) {
@@ -267,38 +285,41 @@ Devuelve JSON estricto:
 
     if (!hasEvidence) {
       return {
-        answer: `No existe evidencia suficiente en el contexto normativo disponible para responder la consulta "${query}".`,
+        answer: 'No existe evidencia suficiente en la biblioteca normativa disponible para responder esta consulta.',
         legalBasis: [],
         requirements: [],
         steps: [],
         documentation: [],
-        observations: ['Se recomienda consultar directamente al Registro Seccional de la DNRPA.'],
+        observations: [],
         sources: [],
         confidence: 'SIN_EVIDENCIA',
         confidenceReason: 'No se encontraron fragmentos o normas coincidentes en la biblioteca registral.',
-        lastSyncDate: new Date().toISOString().split('T')[0],
+        lastSyncDate: null,
+        generatedAt: new Date().toISOString(),
         warnings: ['Sin evidencia normativa recuperada.'],
       };
     }
 
     const isVigenteAndOfficial = matchedDocs.every((d) => d.status === 'VIGENTE' && d.officialSource);
+    const realSyncDate = matchedDocs.find((d) => d.uploadedAt)?.uploadedAt?.split('T')[0] || null;
+
+    // Build evidence summary strictly from retrieved documents/chunks
+    const summaryTexts = matchedChunks.length > 0
+      ? matchedChunks.map((c) => `• ${c.docTitle} (${c.sectionTitle || 'General'}): ${c.text.slice(0, 300)}...`)
+      : matchedDocs.map((d) => `• ${d.title}: ${d.summary || d.content.slice(0, 300)}...`);
+
+    const topicsExtracted = Array.from(
+      new Set(matchedDocs.flatMap((d) => d.topics || []))
+    );
 
     return {
-      answer: `En base a la normativa recuperada del automotor en Argentina para "${query}":`,
+      answer: `Información normativa recuperada de la biblioteca registral oficial para "${query}":\n\n${summaryTexts.join('\n\n')}`,
       legalBasis: matchedDocs.map((d) => d.number || d.title),
-      requirements: [
-        'Solicitud Tipo 08 (Presencial o Digital).',
-        'DNI / CUIT del comprador y vendedor.',
-        'Verificación Física Policial (Formulario 12) si corresponde.',
-      ],
-      steps: [
-        'Solicitar Informe de Dominio e Inhibiciones.',
-        'Completar la Solicitud 08.',
-        'Presentar en el Registro Seccional correspondiente.',
-      ],
-      documentation: ['DNI', 'Formulario 08', 'Formulario 12', 'Título / Cédula'],
+      requirements: topicsExtracted.length > 0 ? topicsExtracted.map((t) => `Materia: ${t}`) : ['Verificar disposiciones en la norma correspondiente.'],
+      steps: ['Consultar el texto completo de las normas listadas en fuentes.'],
+      documentation: matchedDocs.map((d) => d.title),
       observations: [
-        'Verificar la ausencia de prendas o embargos antes de proceder.',
+        'Respuesta generada a partir de los documentos normativos vigentes almacenados en la base registral.',
       ],
       sources: matchedDocs.map((d) => ({
         documentTitle: d.title,
@@ -311,7 +332,8 @@ Devuelve JSON estricto:
       confidenceReason: isVigenteAndOfficial
         ? 'Fundamentado en norma vigente y oficial recuperada directamente de la base de datos.'
         : 'Información relevante en la biblioteca, pero requiere verificación adicional.',
-      lastSyncDate: new Date().toISOString().split('T')[0],
+      lastSyncDate: realSyncDate,
+      generatedAt: new Date().toISOString(),
       warnings: [],
     };
   }

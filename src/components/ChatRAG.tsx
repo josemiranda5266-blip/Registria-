@@ -376,7 +376,7 @@ export const ChatRAG: React.FC<ChatRAGProps> = ({ officialOnly, mode }) => {
 
                         {/* Last Sync */}
                         <div className="text-slate-400">
-                          Información consultada al: <span className="text-slate-200">{msg.responseStructure.lastSyncDate}</span>
+                          Información consultada al: <span className="text-slate-200">{msg.responseStructure.lastSyncDate || 'Sin sincronización registrada'}</span>
                         </div>
 
                         {/* Export & Actions */}
