@@ -273,9 +273,9 @@ export class JsonRepository implements IRepository {
     return client;
   }
 
-  async deleteClient(id: string): Promise<boolean> {
+  async deleteClient(id: string, organizationId?: string): Promise<boolean> {
     const initial = this.data.clients.length;
-    this.data.clients = this.data.clients.filter((c) => c.id !== id);
+    this.data.clients = this.data.clients.filter((c) => c.id !== id || (organizationId && c.organizationId !== organizationId));
     this.saveSync();
     return this.data.clients.length < initial;
   }
@@ -308,9 +308,9 @@ export class JsonRepository implements IRepository {
     return updated;
   }
 
-  async deleteCase(id: string): Promise<boolean> {
+  async deleteCase(id: string, organizationId?: string): Promise<boolean> {
     const initial = this.data.cases.length;
-    this.data.cases = this.data.cases.filter((c) => c.id !== id);
+    this.data.cases = this.data.cases.filter((c) => c.id !== id || (organizationId && c.organizationId !== organizationId));
     this.saveSync();
     return this.data.cases.length < initial;
   }

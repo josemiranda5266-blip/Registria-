@@ -36,13 +36,13 @@ export interface IRepository {
   getClients(organizationId?: string, createdBy?: string): Promise<Client[]>;
   getClientById(id: string): Promise<Client | undefined>;
   saveClient(client: Client): Promise<Client>;
-  deleteClient(id: string): Promise<boolean>;
+  deleteClient(id: string, organizationId?: string): Promise<boolean>;
 
   // Cases
   getCases(organizationId?: string, assignedTo?: string): Promise<ProcedureCase[]>;
   getCaseById(id: string): Promise<ProcedureCase | undefined>;
   saveCase(procedureCase: ProcedureCase): Promise<ProcedureCase>;
-  deleteCase(id: string): Promise<boolean>;
+  deleteCase(id: string, organizationId?: string): Promise<boolean>;
 
   // Norms & Chunks (RAG Source of Truth)
   getNorms(): Promise<NormDocument[]>;

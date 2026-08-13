@@ -21,6 +21,7 @@ export const UpdateClientSchema = CreateClientSchema.partial();
 
 export const CreateCaseSchema = z.object({
   id: z.string().optional(),
+  caseNumber: z.string().optional(),
   title: z.string().min(3, 'El título es obligatorio').max(256),
   clientId: z.string().min(1, 'Debe seleccionar un cliente'),
   clientName: z.string().min(1),

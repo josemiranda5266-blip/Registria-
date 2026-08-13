@@ -309,6 +309,18 @@ app.get('/api/cases', requireAuth, async (req: AuthenticatedRequest, res: Respon
   return res.json({ success: true, cases });
 });
 
+app.get('/api/cases/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const procedureCase = await db.getCaseById(id);
+  if (!procedureCase) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Expediente no encontrado.' } });
+  }
+  if (procedureCase.organizationId && req.user?.organizationId && procedureCase.organizationId !== req.user.organizationId) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Acceso denegado. El expediente pertenece a otra organización.' } });
+  }
+  return res.json({ success: true, case: procedureCase });
+});
+
 app.post('/api/cases', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']), validateBody(CreateCaseSchema), async (req: AuthenticatedRequest, res: Response) => {
   let existingCase: ProcedureCase | undefined;
   if (req.body.id) {
@@ -321,9 +333,11 @@ app.post('/api/cases', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTEN
     }
   }
 
+  const userOrgId = req.user?.organizationId || 'org-registria-default';
+
   const caseData = {
     ...req.body,
-    organizationId: existingCase ? existingCase.organizationId : (req.user?.organizationId || 'org-registria-default'),
+    organizationId: existingCase ? existingCase.organizationId : userOrgId,
     createdBy: existingCase ? existingCase.createdBy : req.user?.id,
     id: req.body.id || `case-${Date.now()}`,
     caseNumber: req.body.caseNumber || `EXP-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -370,7 +384,7 @@ app.delete('/api/cases/:id', requireAuth, requireRole(['ADMIN', 'MANDATARIO']), 
   if (existingCase.organizationId && req.user?.organizationId && existingCase.organizationId !== req.user.organizationId) {
     return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Acceso denegado. El expediente pertenece a otra organización.' } });
   }
-  const deleted = await db.deleteCase(id);
+  const deleted = await db.deleteCase(id, req.user?.organizationId);
   if (deleted) {
     await db.addAuditLog({
       userId: req.user?.id,
@@ -393,6 +407,18 @@ app.get('/api/clients', requireAuth, async (req: AuthenticatedRequest, res: Resp
   return res.json({ success: true, clients });
 });
 
+app.get('/api/clients/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const client = await db.getClientById(id);
+  if (!client) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Cliente no encontrado.' } });
+  }
+  if (client.organizationId && req.user?.organizationId && client.organizationId !== req.user.organizationId) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Acceso denegado. El cliente pertenece a otra organización.' } });
+  }
+  return res.json({ success: true, client });
+});
+
 app.post('/api/clients', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASISTENTE']), validateBody(CreateClientSchema), async (req: AuthenticatedRequest, res: Response) => {
   let existingClient: Client | undefined;
   if (req.body.id) {
@@ -405,9 +431,11 @@ app.post('/api/clients', requireAuth, requireRole(['ADMIN', 'MANDATARIO', 'ASIST
     }
   }
 
+  const userOrgId = req.user?.organizationId || 'org-registria-default';
+
   const clientData = {
     ...req.body,
-    organizationId: existingClient ? existingClient.organizationId : (req.user?.organizationId || 'org-registria-default'),
+    organizationId: existingClient ? existingClient.organizationId : userOrgId,
     createdBy: existingClient ? existingClient.createdBy : req.user?.id,
     id: req.body.id || `cli-${Date.now()}`,
     casesCount: req.body.casesCount || 0,
@@ -455,7 +483,7 @@ app.delete('/api/clients/:id', requireAuth, requireRole(['ADMIN', 'MANDATARIO'])
   if (existingClient.organizationId && req.user?.organizationId && existingClient.organizationId !== req.user.organizationId) {
     return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Acceso denegado. El cliente pertenece a otra organización.' } });
   }
-  const deleted = await db.deleteClient(id);
+  const deleted = await db.deleteClient(id, req.user?.organizationId);
   if (deleted) {
     await db.addAuditLog({
       userId: req.user?.id,
@@ -862,4 +890,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+  startServer();
+}
+
+export { app };

@@ -81,9 +81,9 @@ class DatabaseFacade {
     return repo.saveClient(client);
   }
 
-  async deleteClient(id: string): Promise<boolean> {
+  async deleteClient(id: string, organizationId?: string): Promise<boolean> {
     const repo = await getDbRepository();
-    return repo.deleteClient(id);
+    return repo.deleteClient(id, organizationId);
   }
 
   async getCases(organizationId?: string, assignedTo?: string): Promise<ProcedureCase[]> {
@@ -101,9 +101,9 @@ class DatabaseFacade {
     return repo.saveCase(procedureCase);
   }
 
-  async deleteCase(id: string): Promise<boolean> {
+  async deleteCase(id: string, organizationId?: string): Promise<boolean> {
     const repo = await getDbRepository();
-    return repo.deleteCase(id);
+    return repo.deleteCase(id, organizationId);
   }
 
   async getNorms(): Promise<NormDocument[]> {

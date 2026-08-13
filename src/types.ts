@@ -49,6 +49,12 @@ export interface NormDocument {
   content: string;
   contentHash: string;
   uploadedAt: string;
+  indexedAt?: string;
+  sourceRetrievedAt?: string;
+  verifiedAt?: string;
+  effectiveFrom?: string;
+  effectiveTo?: string;
+  verificationMethod?: string;
   version: string;
   uploadedBy?: string;
   summary?: string;

@@ -1,9 +1,13 @@
 /**
  * REGISTRIA - Base Normativa Registral del Automotor Argentino
- * Incluye Digesto de Normas Técnico-Registrales (DNTR), Decreto-Ley 6582/58 y Disposiciones Recientes.
+ * 
+ * [DEVELOPMENT_ONLY]: INITIAL_NORMATIVE_LIBRARY y NORMATIVE_CHUNKS son estrictamente para
+ * desarrollo local cuando DATABASE_URL no está configurado. No deben presentarse como
+ * fuente oficial verificada en producción.
  */
 
 import { NormDocument, NormChunk, OfficialPortalLink } from '../types';
+import crypto from 'crypto';
 
 export const OFFICIAL_PORTAL_LINKS: OfficialPortalLink[] = [
   {
@@ -68,7 +72,7 @@ export const OFFICIAL_PORTAL_LINKS: OfficialPortalLink[] = [
   },
 ];
 
-export const INITIAL_NORMATIVE_LIBRARY: NormDocument[] = [
+export const INITIAL_NORMATIVE_LIBRARY: NormDocument[] = ([
   {
     documentId: 'dntr-titulo2-cap1',
     title: 'DNTR Título II, Capítulo II - Transferencias de Dominio',
@@ -234,7 +238,10 @@ REQUISITOS PARA SOCIEDADES Y PERSONAS JURÍDICAS EN TRÁMITES REGISTRALES:
     version: '2023.1',
     summary: 'Establece la documentación que deben presentar las sociedades comerciales (SA, SRL, SAS, etc.) para disponer o adquirir vehículos automotores.',
   },
-];
+] as NormDocument[]).map(doc => ({
+  ...doc,
+  contentHash: crypto.createHash('sha256').update(doc.content.trim()).digest('hex')
+}));
 
 export const NORMATIVE_CHUNKS: NormChunk[] = [
   {
