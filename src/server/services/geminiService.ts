@@ -125,57 +125,113 @@ CONSULTA DEL USUARIO: "${query}"
         return this.getDeterministicFallback(query, matchedDocs, matchedChunks);
       }
 
-      // Grounding & Source Filtering (REGLA 5: CITAS RAG — NO INVENTAR FUENTES)
+      // Grounding & Source Filtering (Prompt 3: Citas RAG — Corrección Crítica)
       const filteredSources: AIResponseSource[] = [];
+      let rejectedCitations = 0;
+
       if (Array.isArray(parsed.sources)) {
         for (const src of parsed.sources) {
-          if (!src || typeof src !== 'object') continue;
-          const srcTitleNorm = (src.documentTitle || '').toLowerCase();
+          if (!src || typeof src !== 'object') {
+            rejectedCitations++;
+            continue;
+          }
 
-          // Find exact or partial match in retrieved docs/chunks
+          const srcDocId = src.documentId || '';
+          const srcChunkId = src.chunkId || '';
+          const srcUrl = src.url;
+          const srcSectionOrPage = (src.sectionOrPage || src.article || src.section || '').toLowerCase();
+          const srcTitle = (src.documentTitle || '').toLowerCase();
+
+          // 1. documentId must belong to retrieved documents
           const matchedDoc = matchedDocs.find(
-            (d) => d.title.toLowerCase().includes(srcTitleNorm) || srcTitleNorm.includes(d.title.toLowerCase()) || d.sourceUrl === src.url
-          ) || matchedChunks.find(
-            (c) => c.docTitle.toLowerCase().includes(srcTitleNorm) || srcTitleNorm.includes(c.docTitle.toLowerCase())
+            (d) =>
+              (srcDocId && d.documentId === srcDocId) ||
+              d.title.toLowerCase().includes(srcTitle) ||
+              srcTitle.includes(d.title.toLowerCase())
           );
 
-          if (matchedDoc) {
-            const docObj = 'title' in matchedDoc ? matchedDoc : matchedDocs.find((d) => d.documentId === matchedDoc.documentId);
-            filteredSources.push({
-              documentTitle: docObj?.title || src.documentTitle || 'Norma Registral',
-              sectionOrPage: src.sectionOrPage || 'Digesto DNTR',
-              url: docObj?.sourceUrl || undefined,
-              official: docObj?.officialSource ?? Boolean(src.official),
-              status: docObj?.status || 'VIGENTE',
-            });
+          // 2. chunkId must belong to retrieved chunks
+          const matchedChunk = matchedChunks.find(
+            (c) =>
+              (srcChunkId && c.chunkId === srcChunkId) ||
+              (srcDocId && c.documentId === srcDocId) ||
+              c.docTitle.toLowerCase().includes(srcTitle)
+          );
+
+          if (!matchedDoc && !matchedChunk) {
+            rejectedCitations++;
+            continue;
           }
+
+          const docObj = matchedDoc || matchedDocs.find((d) => d.documentId === matchedChunk?.documentId);
+          if (!docObj) {
+            rejectedCitations++;
+            continue;
+          }
+
+          if (srcDocId && docObj.documentId && srcDocId !== docObj.documentId) {
+            rejectedCitations++;
+            continue;
+          }
+
+          if (srcChunkId && matchedChunk && srcChunkId !== matchedChunk.chunkId) {
+            rejectedCitations++;
+            continue;
+          }
+
+          // 4. URL must correspond exactly to retrieved document's sourceUrl
+          if (srcUrl && docObj.sourceUrl && srcUrl !== docObj.sourceUrl) {
+            rejectedCitations++;
+            continue;
+          }
+
+          // 3. section/article/page must be verifiable within retrieved content (chunk text or doc content)
+          const contentToVerify = matchedChunk?.text || docObj.content || '';
+          if (srcSectionOrPage && srcSectionOrPage !== 'digesto dntr' && srcSectionOrPage !== 'general') {
+            const terms = srcSectionOrPage.split(/[\s,]+/);
+            const hasVerifiableReference = terms.some(
+              (term) => term.length > 2 && contentToVerify.toLowerCase().includes(term)
+            );
+            if (!hasVerifiableReference) {
+              rejectedCitations++;
+              continue;
+            }
+          }
+
+          filteredSources.push({
+            documentTitle: docObj.title,
+            sectionOrPage: src.sectionOrPage || matchedChunk?.sectionTitle || 'Digesto DNTR',
+            url: docObj.sourceUrl,
+            official: docObj.officialSource,
+            status: docObj.status,
+          });
         }
       }
 
-      // If Gemini returned no valid matching sources, build strictly from retrieved matchedDocs
-      const finalSources = filteredSources.length > 0
-        ? filteredSources
-        : matchedDocs.map((d) => ({
-            documentTitle: d.title,
-            sectionOrPage: 'Digesto DNTR',
-            url: d.sourceUrl,
-            official: d.officialSource,
-            status: d.status,
-          }));
+      const finalSources = filteredSources;
 
       // Calculate confidence objectively
-      let computedConfidence: 'ALTA' | 'MEDIA' | 'BAJA' | 'SIN_EVIDENCIA' = ['ALTA', 'MEDIA', 'BAJA', 'SIN_EVIDENCIA'].includes(
+      let computedConfidence: 'ALTA' | 'MEDIA' | 'BAJA' | 'SIN_EVIDENCIA' | 'REQUIERE_REVISION' = ['ALTA', 'MEDIA', 'BAJA', 'SIN_EVIDENCIA', 'REQUIERE_REVISION'].includes(
         parsed.confidence
       )
         ? parsed.confidence
         : 'MEDIA';
 
-      if (finalSources.length === 0 && computedConfidence === 'ALTA') {
-        computedConfidence = 'MEDIA';
+      if (rejectedCitations > 0) {
+        if (finalSources.length === 0) {
+          computedConfidence = 'SIN_EVIDENCIA';
+        } else {
+          computedConfidence = 'REQUIERE_REVISION';
+        }
       }
 
-      // Last Sync Date: Use real uploadedAt/verifiedAt date from matched documents if present
-      const realSyncDate = matchedDocs.find((d) => d.uploadedAt)?.uploadedAt?.split('T')[0] || null;
+      if (finalSources.length === 0 && computedConfidence === 'ALTA') {
+        computedConfidence = 'SIN_EVIDENCIA';
+      }
+
+      // Last Sync Date: Use ONLY sourceRetrievedAt. If not exists -> null.
+      const docWithSync = matchedDocs.find((d) => d.sourceRetrievedAt);
+      const realSyncDate = docWithSync?.sourceRetrievedAt ? docWithSync.sourceRetrievedAt.split('T')[0] : null;
 
       return {
         answer: parsed.answer || 'Respuesta procesada correctamente.',
@@ -301,7 +357,8 @@ Devuelve JSON estricto:
     }
 
     const isVigenteAndOfficial = matchedDocs.every((d) => d.status === 'VIGENTE' && d.officialSource);
-    const realSyncDate = matchedDocs.find((d) => d.uploadedAt)?.uploadedAt?.split('T')[0] || null;
+    const docWithSync = matchedDocs.find((d) => d.sourceRetrievedAt);
+    const realSyncDate = docWithSync?.sourceRetrievedAt ? docWithSync.sourceRetrievedAt.split('T')[0] : null;
 
     // Build evidence summary strictly from retrieved documents/chunks
     const summaryTexts = matchedChunks.length > 0

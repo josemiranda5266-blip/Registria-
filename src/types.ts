@@ -224,7 +224,7 @@ export interface AIResponseStructure {
   documentation: string[];
   observations: string[];
   sources: AIResponseSource[];
-  confidence: 'ALTA' | 'MEDIA' | 'BAJA' | 'SIN_EVIDENCIA';
+  confidence: 'ALTA' | 'MEDIA' | 'BAJA' | 'SIN_EVIDENCIA' | 'REQUIERE_REVISION';
   confidenceReason?: string;
   lastSyncDate?: string | null;
   generatedAt?: string;

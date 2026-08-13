@@ -34,13 +34,13 @@ export interface IRepository {
 
   // Clients
   getClients(organizationId?: string, createdBy?: string): Promise<Client[]>;
-  getClientById(id: string): Promise<Client | undefined>;
+  getClientById(id: string, organizationId?: string): Promise<Client | undefined>;
   saveClient(client: Client): Promise<Client>;
   deleteClient(id: string, organizationId?: string): Promise<boolean>;
 
   // Cases
   getCases(organizationId?: string, assignedTo?: string): Promise<ProcedureCase[]>;
-  getCaseById(id: string): Promise<ProcedureCase | undefined>;
+  getCaseById(id: string, organizationId?: string): Promise<ProcedureCase | undefined>;
   saveCase(procedureCase: ProcedureCase): Promise<ProcedureCase>;
   deleteCase(id: string, organizationId?: string): Promise<boolean>;
 

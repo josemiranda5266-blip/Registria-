@@ -258,8 +258,13 @@ export class JsonRepository implements IRepository {
     return result;
   }
 
-  async getClientById(id: string): Promise<Client | undefined> {
-    return this.data.clients.find((c) => c.id === id);
+  async getClientById(id: string, organizationId?: string): Promise<Client | undefined> {
+    const client = this.data.clients.find((c) => c.id === id);
+    if (!client) return undefined;
+    if (organizationId && client.organizationId && client.organizationId !== organizationId) {
+      return undefined;
+    }
+    return client;
   }
 
   async saveClient(client: Client): Promise<Client> {
@@ -292,8 +297,13 @@ export class JsonRepository implements IRepository {
     return result;
   }
 
-  async getCaseById(id: string): Promise<ProcedureCase | undefined> {
-    return this.data.cases.find((c) => c.id === id);
+  async getCaseById(id: string, organizationId?: string): Promise<ProcedureCase | undefined> {
+    const procedureCase = this.data.cases.find((c) => c.id === id);
+    if (!procedureCase) return undefined;
+    if (organizationId && procedureCase.organizationId && procedureCase.organizationId !== organizationId) {
+      return undefined;
+    }
+    return procedureCase;
   }
 
   async saveCase(procedureCase: ProcedureCase): Promise<ProcedureCase> {

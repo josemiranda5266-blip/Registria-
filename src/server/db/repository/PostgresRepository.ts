@@ -262,11 +262,14 @@ export class PostgresRepository implements IRepository {
     return res.rows;
   }
 
-  async getClientById(id: string): Promise<Client | undefined> {
-    const res = await this.pool.query(
-      'SELECT id, organization_id AS "organizationId", created_by AS "createdBy", name, dni_cuit AS "dniCuit", type, phone, email, address, notes, cases_count AS "casesCount", created_at AS "createdAt" FROM clients WHERE id = $1',
-      [id]
-    );
+  async getClientById(id: string, organizationId?: string): Promise<Client | undefined> {
+    let sql = 'SELECT id, organization_id AS "organizationId", created_by AS "createdBy", name, dni_cuit AS "dniCuit", type, phone, email, address, notes, cases_count AS "casesCount", created_at AS "createdAt" FROM clients WHERE id = $1';
+    const params: any[] = [id];
+    if (organizationId) {
+      params.push(organizationId);
+      sql += ` AND organization_id = $${params.length}`;
+    }
+    const res = await this.pool.query(sql, params);
     return res.rows[0];
   }
 
@@ -284,6 +287,7 @@ export class PostgresRepository implements IRepository {
          address = EXCLUDED.address,
          notes = EXCLUDED.notes,
          cases_count = EXCLUDED.cases_count
+       WHERE clients.organization_id = EXCLUDED.organization_id
        RETURNING id, organization_id AS "organizationId", created_by AS "createdBy", name, dni_cuit AS "dniCuit", type, phone, email, address, notes, cases_count AS "casesCount", created_at AS "createdAt"`,
       [
         client.id,
@@ -340,8 +344,14 @@ export class PostgresRepository implements IRepository {
     }));
   }
 
-  async getCaseById(id: string): Promise<ProcedureCase | undefined> {
-    const res = await this.pool.query('SELECT * FROM cases WHERE id = $1', [id]);
+  async getCaseById(id: string, organizationId?: string): Promise<ProcedureCase | undefined> {
+    let sql = 'SELECT * FROM cases WHERE id = $1';
+    const params: any[] = [id];
+    if (organizationId) {
+      params.push(organizationId);
+      sql += ` AND organization_id = $${params.length}`;
+    }
+    const res = await this.pool.query(sql, params);
     if (res.rows.length === 0) return undefined;
     const r = res.rows[0];
     return {
@@ -386,6 +396,7 @@ export class PostgresRepository implements IRepository {
          fees_amount = EXCLUDED.fees_amount,
          fees_paid = EXCLUDED.fees_paid,
          updated_at = EXCLUDED.updated_at
+       WHERE cases.organization_id = EXCLUDED.organization_id
        RETURNING id`,
       [
         procedureCase.id,
